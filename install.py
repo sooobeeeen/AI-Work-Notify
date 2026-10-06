@@ -4,6 +4,9 @@
     python install.py --runtime-only  update notify.py only (hooks, settings and skills untouched)
     python install.py --dry-run       show what would change and change nothing
 
+Records the installed version and mode in installed.json; "notify.py update" later downloads
+the latest GitHub release and runs its install.py the same way.
+
 notify.py goes to %USERPROFILE%\\.kakaowork-notify, which the hooks run. Hook commands carry no
 quotes because Antigravity passes quotes through literally, so the Python and notify.py paths
 must have no spaces; their 8.3 short form is used when they do. Our hooks are added once,
@@ -194,12 +197,18 @@ def main():
     a = p.parse_args()
     sys.stdout.reconfigure(errors="replace")
     install_runtime(a.dry_run)
-    if a.runtime_only:
+    if not a.runtime_only:
+        install_config(a.dry_run)
+        install_hooks(a.dry_run)
+        install_skill(a.dry_run)
+    if a.dry_run:
         return
-    install_config(a.dry_run)
-    install_hooks(a.dry_run)
-    install_skill(a.dry_run)
-    if not a.dry_run:
+    # notify.py update reads this to compare with the latest release and to repeat the same mode
+    version = (PKG / "VERSION").read_text(encoding="utf-8").strip()
+    (DATA / "installed.json").write_text(json.dumps(
+        {"version": version, "mode": "runtime-only" if a.runtime_only else "full"}), encoding="utf-8")
+    say(f"설치한 판: {version}")
+    if not a.runtime_only:
         say(NEXT)
 
 

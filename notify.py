@@ -17,6 +17,7 @@ Management (prints results, exit 1 on failure):
     notify.py webhook                     save the webhook URL from the clipboard
     notify.py test                        send a test message
     notify.py server                      start the button's page if it is not running
+    notify.py update                      install the latest GitHub release if it is newer
     notify.py focus <claude|codex|app|ide> [conversation id]  bring that app's window (and conversation) to the front
 
 A queued message is sent only if the user does not look at the desktop app within
@@ -36,9 +37,11 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 from ctypes import wintypes
 from pathlib import Path
 
@@ -306,6 +309,16 @@ def serve():
                 self.send_error(404)
                 return
             popup = kakao_popup()  # before focus() changes what is in front
+            # Any web page can reach 127.0.0.1 too, and browsers mark such requests with
+            # Sec-Fetch-Site. Only a navigation no page started ("none" or no header) or one made
+            # while KakaoWork's small window is in front may move windows.
+            site = self.headers.get("Sec-Fetch-Site", "none")
+            if site != "none" and not popup:
+                log(f"BLOCKED {tool} request from a web page ({site})")
+                self.send_error(403)
+                return
+            if site != "none":
+                log(f"REQUEST {tool} from KakaoWork's window ({site})")
             query = urllib.parse.parse_qs(parts.query)
             folder = re.sub(r"[\\/:*?\"<>|]", "", query.get("folder", [""])[0])[:100]  # title text only
             host = query.get("host", [""])[0]
@@ -599,7 +612,8 @@ HOOK_FILES = {"Claude Code": Path.home() / ".claude" / "settings.json",
               "Codex": Path.home() / ".codex" / "hooks.json",
               "Antigravity": Path.home() / ".gemini" / "config" / "hooks.json"}
 WEBHOOK = re.compile(r"https://kakaowork\.com/bots/hook/\w{16,}")
-MANAGE = ("status", "set", "webhook", "test", "server", "focus")
+MANAGE = ("status", "set", "webhook", "test", "server", "focus", "update")
+REPO = "sooobeeeen/AI-Work-Notify"  # public; each release is a vX.Y.Z tag
 
 
 class Fail(Exception):
@@ -664,8 +678,56 @@ def webhook(source=None):
     print(f"웹훅 주소를 저장했습니다: {masked(url)}")
 
 
+def installed():
+    """{"version", "mode"} written by install.py; mode is "full" or "runtime-only"."""
+    path = HOME / "installed.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def version_key(text):
+    return tuple(int(x) for x in re.findall(r"\d+", text)[:3])
+
+
+def github(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "ai-work-notify"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
+
+
+def update():
+    """Install the latest GitHub release over this one when it is newer, the same way as
+    before (full, or runtime-only on the PC that keeps the source)."""
+    have = installed()
+    try:
+        tag = json.loads(github(f"https://api.github.com/repos/{REPO}/releases/latest"))["tag_name"]
+    except (OSError, ValueError, KeyError) as e:
+        raise Fail(f"최신 판을 확인하지 못했습니다: {e}") from None
+    if have.get("version") and version_key(tag) <= version_key(have["version"]):
+        print(f"이미 최신 판입니다 (설치된 판 {have['version']}, 최신 {tag}).")
+        return
+    print(f"새 판을 설치합니다: {have.get('version', '알 수 없음')} -> {tag}", flush=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            (root / "release.zip").write_bytes(github(f"https://github.com/{REPO}/archive/refs/tags/{tag}.zip"))
+        except OSError as e:
+            raise Fail(f"새 판을 받지 못했습니다: {e}") from None
+        with zipfile.ZipFile(root / "release.zip") as z:
+            if any(not (root / "pkg" / n).resolve().is_relative_to((root / "pkg").resolve()) for n in z.namelist()):
+                raise Fail("받은 압축 파일의 경로가 이상해 설치하지 않았습니다.")
+            z.extractall(root / "pkg")
+        installer = next((root / "pkg").glob("*/install.py"), None)
+        if not installer:
+            raise Fail("받은 판에서 install.py를 찾지 못했습니다.")
+        args = [sys.executable, str(installer)] + (["--runtime-only"] if have.get("mode") == "runtime-only" else [])
+        if subprocess.run(args).returncode != 0:
+            raise Fail("설치 도구가 실패했습니다. 위 출력을 확인하세요.")
+
+
 def status():
     cfg = config()
+    have = installed()
+    print(f"[판] {have.get('version', '알 수 없음')} ({'알림 장치만' if have.get('mode') == 'runtime-only' else '전체 설치'})")
     print("[보내는 곳]")
     if cfg["webhook_url"]:
         print(f"  웹훅 {masked(cfg['webhook_url'])}")
@@ -723,10 +785,11 @@ def manage(args):
             webhook(rest[0] if rest else None)
         elif cmd == "focus" and rest and rest[0] in APPS:
             print(focus(rest[0], session=rest[1] if len(rest) > 1 else ""))
-        elif cmd in ("status", "test", "server"):
-            {"status": status, "test": test, "server": server}[cmd]()
+        elif cmd in ("status", "test", "server", "update"):
+            {"status": status, "test": test, "server": server, "update": update}[cmd]()
         else:
-            raise Fail("사용법: notify.py status | set <설정> <값> | webhook [파일] | test | server | focus <앱> [대화 ID]")
+            raise Fail("사용법: notify.py status | set <설정> <값> | webhook [파일] | test | server | update"
+                       " | focus <앱> [대화 ID]")
         return 0
     except Fail as e:
         print(f"실패: {e}")

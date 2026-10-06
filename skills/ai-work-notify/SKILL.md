@@ -1,6 +1,6 @@
 ---
 name: ai-work-notify
-description: 카카오워크 'AI 작업 알림'을 관리한다. Claude Code·Codex·Antigravity 답변이 끝났는데 보지 않으면 카카오워크 1:1 방으로 오는 알림을 켜고 끄기, 대기 시간 바꾸기, 웹훅 주소 넣기·바꾸기, 시험 메시지, "알림이 안 와" 문제 해결, 알림 지우기에 사용한다. 처음 설치는 AI-Work-Notify 폴더의 AGENTS.md를 따른다.
+description: 카카오워크 'AI 작업 알림'을 관리한다. Claude Code·Codex·Antigravity 답변이 끝났는데 보지 않으면 카카오워크 1:1 방으로 오는 알림을 켜고 끄기, 대기 시간 바꾸기, 웹훅 주소 넣기·바꾸기, 시험 메시지, "알림이 안 와" 문제 해결, 새 판으로 업데이트, 알림 지우기에 사용한다. 처음 설치는 AI-Work-Notify 저장소(github.com/sooobeeeen/AI-Work-Notify)의 AGENTS.md를 따른다.
 ---
 
 # AI 작업 알림 관리
@@ -33,6 +33,7 @@ Bash에서는 `python ~/.kakaowork-notify/notify.py status`처럼 쓴다. 실패
 | Antigravity IDE만 / 앱만 | `set antigravity ide` / `set antigravity app` (기본 `app,ide`) |
 | 웹훅 주소 넣어 줘 / 바꿔 줘 | 사용자가 주소를 복사했는지 확인한 뒤 `webhook`. 클립보드를 못 읽으면 메모장 파일에 저장하게 하고 `webhook <파일>`, 그 파일은 지우게 한다 |
 | 알림 시험해 줘 | `test`. 1:1 방에 왔는지 사용자에게 확인받는다 |
+| 업데이트해 줘 / 새 판 있어? | `update`. GitHub(sooobeeeen/AI-Work-Notify) 최신 릴리즈가 더 새로울 때만 받아 설치한다. 설정·웹훅 주소·훅은 그대로다. `update`가 없다고 나오면(1.2.0 전 판) 저장소 주소로 처음 설치하듯 다시 설치한다 |
 | 이동 단추가 안 돼 | `server`. 창은 뜨는데 다른 대화가 보이면: 1.1.0 전에 온 알림(단추에 대화 ID 없음)이거나, Codex에서 보관(archive)한 대화(Codex 앱이 열지 못함)다. 새 알림으로 다시 해 보게 한다. Antigravity는 원래 대화까지는 못 바꾼다 |
 | 상태 보여 줘 | `status` |
 
@@ -52,6 +53,8 @@ Bash에서는 `python ~/.kakaowork-notify/notify.py status`처럼 쓴다. 실패
 | `ERROR` (그 밖) | 알림 장치 오류다. 메시지를 사용자에게 알린다. |
 | `DRY` | 웹훅 주소가 없어 기록만 했다. `webhook`으로 넣는다. |
 | `FOCUS <앱> ok` / `hidden` / `denied` / `no window` | 이동 단추 결과: 성공 / 다른 데스크톱으로 못 넘어감 / Windows가 막음 / 그 앱 창이 없음(앱이 꺼져 있음). 뒤에 `session=…`이 붙으면 Claude Code나 Codex에 그 대화를 열라고 전달한 것이고, `host=vscode`면 VS Code 창을 띄운 것이다. |
+| `BLOCKED … request from a web page` | 카카오워크가 아닌 웹 페이지가 이동 단추 주소를 불러서 거절했다. 정상이다. 카카오워크 단추를 눌렀는데 이 줄이 나오면 카카오워크 작은 창의 제목이 바뀌었을 수 있으니 사용자에게 알린다. |
+| `REQUEST … from KakaoWork's window` | 카카오워크 작은 창이 연 요청이라 받아들였다. 정상이다. |
 | `POPUP not found` / `POPUP still open` | 이동 단추를 누르면 뜨는 카카오워크 작은 창을 못 찾았거나 못 닫았다. 사용자가 닫으면 된다. |
 | 아무 줄도 없음 | 훅이 돌지 않았다. `status`의 [훅]이 "연결됨"인지, Codex 승인 기록이 "있음"인지 본다. 앱을 다시 시작하게 한다. 연결이 없으면 AI-Work-Notify 폴더에서 `python install.py`를 다시 실행한다. |
 
