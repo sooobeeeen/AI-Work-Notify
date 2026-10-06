@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+# runtime files that hold a webhook URL or bot key; they belong in %USERPROFILE%\.kakaowork-notify only
+config.json
+contacts.json
+log.txt
+state/
+*.before-ai-work-notify

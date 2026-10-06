@@ -1,0 +1,4 @@
+interface:
+  display_name: "스킬: AI 작업 알림"
+  short_description: "카카오워크 AI 작업 알림 켜기·끄기·웹훅 주소·문제 해결"
+  default_prompt: "$ai-work-notify로 알림 상태를 확인해 줘."
