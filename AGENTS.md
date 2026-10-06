@@ -4,10 +4,11 @@
 
 ## 설치 순서
 
-0. **쓰는 앱 확인.** 이 알림은 Claude 데스크톱 앱, Codex 데스크톱 앱, Antigravity(2.0 앱·IDE)에서 한 작업만 알린다. 터미널이나 VS Code에서 쓰는 Claude Code·Codex는 알리지 않는다. 사용자에게 무엇을 쓰는지 묻고, 데스크톱 앱을 하나도 쓰지 않으면 그렇게 알리고 설치하지 않는다.
+0. **쓰는 앱 확인.** 이 알림은 Claude 데스크톱 앱, Codex 데스크톱 앱(Windows에서는 ChatGPT 앱과 같은 프로그램), VS Code의 Claude Code·Codex 확장, Antigravity(2.0 앱·IDE)에서 한 작업만 알린다. 터미널에서 쓰는 Claude Code·Codex는 알리지 않는다. 사용자에게 무엇을 쓰는지 묻고, 이 중 하나도 쓰지 않으면 그렇게 알리고 설치하지 않는다.
 1. **Python 확인.** `python --version`이 3.10 이상인지 본다. 없거나 낮으면 사용자 범위로 설치한다.
    `winget install -e --id Python.Python.3.13 --scope user`
    설치 뒤 새 터미널에서 다시 확인한다. Microsoft Store 판 Python(경로에 `WindowsApps`)은 쓰지 않는다.
+   `python`이 다른 프로그램에 딸린 Python(경로가 `Program Files\Inkscape`, `Blender` 등)을 가리키면 그것도 쓰지 않는다. 그 프로그램을 지우거나 올리면 알림이 끊긴다. `py -0p`로 따로 설치된 Python을 찾아 그 전체 경로로 아래 명령을 실행하고, 없으면 위처럼 설치한다. 훅에는 이때 쓴 Python 경로가 들어가므로 설치 뒤 사용자에게 그 Python을 지우지 말라고 알린다.
 2. **미리 보기.** 이 폴더에서 `python install.py --dry-run`을 실행하고, 무엇이 바뀌는지 사용자에게 짧게 알린다.
 3. **설치.** `python install.py`를 실행한다.
    - Codex에서는 사용자 폴더(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.kakaowork-notify`)에 써야 하므로 샌드박스 밖 실행 승인을 요청한다.
@@ -24,7 +25,7 @@
 6. **시험.** `python %USERPROFILE%\.kakaowork-notify\notify.py test`를 실행하고, 카카오워크 1:1 방에 시험 메시지가 왔는지 사용자에게 확인받는다. 결과 줄이 `SENT`여도 방에 왔는지는 사용자만 볼 수 있다.
 7. **마무리 안내.**
    - Codex를 쓰면 Codex에서 `/hooks`를 열어 알림 훅 2개를 승인해야 한다. 안 하면 Codex 알림만 오지 않는다.
-   - Claude Code, Codex, Antigravity를 다시 시작해야 새 대화부터 알림이 온다.
+   - Claude Code, Codex, VS Code, Antigravity를 다시 시작해야 새 대화부터 알림이 온다.
 8. **보고.** `notify.py status` 결과를 요약해 알린다. 연결된 앱, 보내는 곳(가린 주소), 설정을 포함한다.
 
 ## 지킬 것

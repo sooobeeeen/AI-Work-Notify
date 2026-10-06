@@ -15,12 +15,13 @@ Claude Code·Codex·Antigravity에 일을 맡겨 두고 다른 일을 하다가,
 - 그 앱 창을 보고 있으면 보내지 않습니다. 창이 맨 앞에 있고 최근 30초 안에 키보드나 마우스를 썼으면 본 것으로 칩니다.
 - 같은 대화에 다음 요청을 보내면 기다리던 알림은 취소됩니다.
 - Claude Code가 승인을 기다릴 때도 알려 줍니다.
+- 이동 단추는 Claude Code와 Codex 데스크톱 앱에서는 그 질문을 한 대화를 열어 줍니다. VS Code와 Antigravity는 대화를 여는 링크가 없어서, 그 작업 폴더가 열린 창을 앞으로 띄웁니다. 창을 X로 닫아 트레이에 들어가 있어도 다시 띄웁니다(VS Code는 X로 닫으면 종료되므로 예외).
 - 시간은 요청을 보낸 때부터 답변이 끝날 때까지 걸린 시간입니다.
 - 이동 단추는 이 PC의 카카오워크에서 눌러야 합니다. 휴대폰에서는 동작하지 않습니다.
 
 ## 설치
 
-> **데스크톱 앱에서만 동작합니다.** Claude(데스크톱 앱), Codex(데스크톱 앱), Antigravity(2.0 앱 또는 Antigravity IDE)에서 한 작업만 알려 줍니다. 터미널이나 VS Code에서 쓰는 Claude Code·Codex는 알림이 오지 않습니다.
+> **창이 있는 앱에서만 동작합니다.** Claude 데스크톱 앱, Codex 데스크톱 앱(Windows에서는 ChatGPT 앱과 같은 프로그램), VS Code의 Claude Code·Codex 확장, Antigravity(2.0 앱 또는 Antigravity IDE)에서 한 작업을 알려 줍니다. 터미널에서 쓰는 Claude Code·Codex는 알림이 오지 않습니다.
 
 1. 이 폴더를 받아 원하는 곳에 둡니다(압축 파일을 풉니다).
 2. Claude Code나 Codex에서 이 폴더를 열고 **"설치해줘"** 라고 말합니다. 에이전트가 `AGENTS.md`를 읽고 설치합니다. Python이 없으면 에이전트가 먼저 설치합니다. Codex는 설치 중에 "샌드박스 밖에서 실행" 승인을 요청하는데, 승인해야 설치됩니다.
@@ -32,7 +33,7 @@ Claude Code·Codex·Antigravity에 일을 맡겨 두고 다른 일을 하다가,
 4. 에이전트에게 **"웹훅 주소 넣어줘"** 라고 말합니다. 주소를 대화창에 붙이지 않아도 됩니다. 에이전트가 복사해 둔 주소를 바로 읽어 저장합니다.
 5. 에이전트가 보낸 시험 메시지가 카카오워크 1:1 방에 왔는지 확인합니다.
 6. Codex를 쓰면 Codex에서 `/hooks`를 열어 알림 훅 2개를 **승인**합니다. 승인하지 않으면 Codex 알림만 오지 않습니다.
-7. Claude Code, Codex, Antigravity를 다시 시작합니다. 새 대화부터 알림이 옵니다.
+7. Claude Code, Codex, VS Code, Antigravity를 다시 시작합니다. 새 대화부터 알림이 옵니다.
 
 ## 쓰는 법
 

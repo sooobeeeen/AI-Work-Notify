@@ -17,12 +17,14 @@ Management (prints results, exit 1 on failure):
     notify.py webhook                     save the webhook URL from the clipboard
     notify.py test                        send a test message
     notify.py server                      start the button's page if it is not running
-    notify.py focus <claude|codex|app|ide>  bring that app's window to the front
+    notify.py focus <claude|codex|app|ide> [conversation id]  bring that app's window (and conversation) to the front
 
 A queued message is sent only if the user does not look at the desktop app within
 unread_seconds: "looked" means the app's window is in front and there was keyboard or
 mouse input in the last 30 seconds. A new request in the same session cancels it.
-Runs that do not belong to a desktop app window (claude -p, codex exec, agy -p) are skipped.
+Claude Code and Codex may also run inside VS Code (its extensions or terminal); the button
+then brings that VS Code window to the front. Runs with no window of their own
+(claude -p, codex exec, agy -p from a terminal, SDK scripts) are skipped.
 
 Sending: config.json next to this file. webhook_url (a KakaoWork Incoming Webhook tied to one
 room) if set, otherwise app_key + email (a bot); with neither, messages only go to the log.
@@ -52,6 +54,18 @@ AGY_DIRS = {"antigravity-ide": "ide", "antigravity-cli": "cli", "antigravity": "
 # Desktop app process that owns the window, and the agent process it runs hooks from.
 APPS = {"claude": "claude.exe", "codex": "chatgpt.exe", "app": "antigravity.exe", "ide": "antigravity ide.exe"}
 AGENTS = {"claude": "claude.exe", "codex": "codex.exe"}
+# Editors that run the agent inside their own window instead (VS Code's Claude Code and Codex
+# extensions, or its terminal); the button then brings that editor window to the front.
+HOSTS = {"code.exe": "vscode"}
+HOST_NAMES = {"vscode": "VS Code"}
+HOST_EXES = {host: exe for exe, host in HOSTS.items()}
+# Links that open one conversation. Claude's desktop app gives its hooks the conversation's id
+# (CLAUDE_CODE_HOST_SESSION_ID); its taskbar jump list uses the same link. Codex's hook event
+# carries session_id, the thread id behind codex://threads/<id> (learn.chatgpt.com/docs/reference/commands).
+# Antigravity has no such link (docs, changelog and agy --help checked 2026-10-06), so its button
+# only prefers the window whose title names the workspace folder.
+LINKS = {"claude": (re.compile(r"local_[A-Za-z0-9-]{1,64}"), "claude://code/continue?session={}"),
+         "codex": (re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"), "codex://threads/{}")}
 ACTIVE_INPUT_MS = 30_000
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -82,7 +96,7 @@ def config():
     return cfg
 
 
-def send(cfg, text, tool=None):
+def send(cfg, text, tool=None, session="", folder="", host=""):
     if not cfg["enabled"]:
         return
     payload = {"text": text}
@@ -97,7 +111,7 @@ def send(cfg, text, tool=None):
         log("DRY " + text.replace("\n", " | "))
         return
     if tool in APPS:  # text stays as the push preview; blocks add the "go to the app" button
-        payload["blocks"] = [{"type": "text", "text": text}, button(tool)]
+        payload["blocks"] = [{"type": "text", "text": text}, button(tool, session, folder, host)]
         ensure_server()
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST", headers=headers)
     with urllib.request.urlopen(req, timeout=5) as r:
@@ -154,34 +168,48 @@ def processes():
     return out
 
 
-def find_app(tool):
-    """Pid of the desktop app's main process, or None for a headless run."""
-    procs = processes()
+def find_app(tool, procs=None, env=os.environ):
+    """(pid of the main process owning the window, host name or "") or None for a headless run."""
+    procs = procs or processes()
     chain, pid = [], os.getpid()
     while pid in procs and pid not in chain and len(chain) < 64:
         chain.append(pid)
         pid = procs[pid][0]
     names = [procs[p][1] for p in chain]
+    host = ""
     if tool in AGENTS:
-        # The nearest agent process must be a direct child of the app; claude -p or
-        # codex exec started from a shell has a shell as its parent instead.
         if AGENTS[tool] not in names:
             return None
-        i = names.index(AGENTS[tool]) + 1
-        if i >= len(chain) or names[i] != APPS[tool]:
-            return None
+        i = names.index(AGENTS[tool])
+        while i + 1 < len(chain) and names[i + 1] == names[i]:  # launcher -> agent (-> Claude app)
+            i += 1
+        # The desktop app runs the agent as its direct child. Claude's app is named like its
+        # agent, so the top of that run is the app only if it owns a window.
+        if names[i] == APPS[tool] and (chain[i] in window_owners()
+                                       or env.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop"):
+            pass
+        elif i + 1 < len(chain) and names[i + 1] == APPS[tool]:
+            i += 1
+        else:
+            # Inside an editor (VS Code's extensions, or its terminal with a shell between),
+            # unless it is an SDK script. claude -p or codex exec from a plain terminal has
+            # no editor above it and is skipped.
+            j = next((j for j in range(i + 1, len(chain)) if names[j] in HOSTS), None)
+            if j is None or env.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk"):
+                return None
+            i, host = j, HOSTS[names[j]]
     elif tool in APPS:  # Antigravity: the client was already told apart by its data path
         if APPS[tool] in names:
             i = names.index(APPS[tool])
         else:
             mains = [p for p, (pp, n) in procs.items()
                      if n == APPS[tool] and procs.get(pp, (0, ""))[1] != n]
-            return mains[0] if mains else None
+            return (mains[0], "") if mains else None
     else:
         return None
     while i + 1 < len(chain) and names[i + 1] == names[i]:  # climb to the main process
         i += 1
-    return chain[i]
+    return chain[i], host
 
 
 class LastInputInfo(ctypes.Structure):
@@ -206,11 +234,32 @@ PAGE = ("<!doctype html><meta charset=utf-8><title>{title}</title>"
         "<body style='font:15px sans-serif;padding:24px'>{title}<br>이 창은 닫아도 됩니다.")
 
 
-def button(tool):
+def conversation(tool, ev):
+    """The id the app's conversation link takes, or "" when the app has no such link."""
+    if tool == "claude":
+        return os.environ.get("CLAUDE_CODE_HOST_SESSION_ID", "")
+    if tool == "codex":
+        return str(ev.get("session_id") or "")
+    return ""
+
+
+def label(tool, host=""):
+    return NAMES[tool] + (f" ({HOST_NAMES[host]})" if host else "")
+
+
+def button(tool, session="", folder="", host=""):
     # KakaoWork's own small window, which the server closes; the system browser would
     # leave Chrome on top of the app.
-    return {"type": "button", "text": f"{NAMES[tool]}로 이동", "style": "default",
-            "action": {"type": "open_inapp_browser", "value": f"http://127.0.0.1:{PORT}/focus/{tool}",
+    params = {}
+    if host:  # the conversation links open the desktop app, not the editor
+        params["host"] = host
+    elif tool in LINKS and LINKS[tool][0].fullmatch(session or ""):
+        params["session"] = session
+    if folder:  # picks the window of that workspace when there are several
+        params["folder"] = folder
+    url = f"http://127.0.0.1:{PORT}/focus/{tool}" + ("?" + urllib.parse.urlencode(params) if params else "")
+    return {"type": "button", "text": f"{HOST_NAMES.get(host) or NAMES[tool]}로 이동", "style": "default",
+            "action": {"type": "open_inapp_browser", "value": url,
                        "standalone": True, "width": 360, "height": 160}}
 
 
@@ -256,9 +305,14 @@ def serve():
                 self.send_error(404)
                 return
             popup = kakao_popup()  # before focus() changes what is in front
-            result = focus(tool, urllib.parse.parse_qs(parts.query).get("via", [""])[0])
-            title = (f"{NAMES[tool]}로 이동했습니다." if result.startswith("ok")
-                     else f"{NAMES[tool]} 창으로 이동하지 못했습니다 ({result}).")
+            query = urllib.parse.parse_qs(parts.query)
+            folder = re.sub(r"[\\/:*?\"<>|]", "", query.get("folder", [""])[0])[:100]  # title text only
+            host = query.get("host", [""])[0]
+            host = host if host in HOST_EXES else ""
+            result = focus(tool, query.get("via", [""])[0], query.get("session", [""])[0], folder, host)
+            where = HOST_NAMES.get(host) or NAMES[tool]
+            title = (f"{where}로 이동했습니다." if result.startswith("ok")
+                     else f"{where} 창으로 이동하지 못했습니다 ({result}).")
             body = PAGE.format(title=title).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -288,16 +342,16 @@ def ensure_server():
         spawn("serve")
 
 
-def top_windows():
-    """(exe name, title, area, owned, hwnd) of every visible titled top-level window,
-    on any virtual desktop."""
+def top_windows(hidden=False):
+    """(exe name, title, area, owned, hwnd, pid) of every visible (or, with hidden, every) titled
+    top-level window, on any virtual desktop."""
     names = {pid: n for pid, (_, n) in processes().items()}
     found = []
 
     @WNDENUMPROC
     def visit(hwnd, _):
         length = user32.GetWindowTextLengthW(hwnd)
-        if user32.IsWindowVisible(hwnd) and length:
+        if (hidden or user32.IsWindowVisible(hwnd)) and length:
             pid = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             title = ctypes.create_unicode_buffer(length + 1)
@@ -305,17 +359,51 @@ def top_windows():
             r = wintypes.RECT()
             user32.GetWindowRect(hwnd, ctypes.byref(r))
             found.append((names.get(pid.value, ""), title.value, (r.right - r.left) * (r.bottom - r.top),
-                          bool(user32.GetWindow(hwnd, 4)), hwnd))  # 4: GW_OWNER
+                          bool(user32.GetWindow(hwnd, 4)), hwnd, pid.value))  # 4: GW_OWNER
         return True
 
     user32.EnumWindows(visit, 0)
     return found
 
 
-def app_window(tool):
-    """The app's largest unowned window."""
-    found = [(area, h) for exe, _, area, owned, h in top_windows() if exe == APPS[tool] and not owned]
-    return max(found)[1] if found else None
+def window_owners():
+    """Pids that own a titled top-level window of their own, shown or hidden in the tray."""
+    return {pid for _, _, area, owned, _, pid in top_windows(hidden=True) if area > 0 and not owned}
+
+
+def app_window(exe, seconds=0, folder=""):
+    """The program's unowned window whose title names the workspace folder (Antigravity and
+    VS Code titles do), else its largest; waits up to `seconds` for one to show up."""
+    end = time.time() + seconds
+    while True:
+        found = [(bool(folder) and folder.lower() in title.lower(), area, h)
+                 for e, title, area, owned, h, _ in top_windows() if e == exe and not owned]
+        if found or time.time() >= end:
+            return max(found)[2] if found else None
+        time.sleep(0.2)
+
+
+def reveal(exe):
+    """Show the program's window again when it was closed to the tray (X on Claude only hides it)."""
+    found = [(area, h) for e, _, area, owned, h, _ in top_windows(hidden=True)
+             if e == exe and not owned and area > 0]
+    if not found:
+        return None
+    hwnd = max(found)[1]
+    user32.ShowWindow(hwnd, 5)  # SW_SHOW
+    return hwnd
+
+
+def open_conversation(tool, session):
+    """Have the app open the conversation; it also shows its window, even from the tray."""
+    link = LINKS.get(tool)
+    if not link or not link[0].fullmatch(session or ""):
+        return False
+    try:
+        os.startfile(link[1].format(session))
+    except OSError:
+        return False
+    return True
 
 
 def cloaked(hwnd):
@@ -334,10 +422,15 @@ def shown(hwnd, seconds=1.5):
     return False
 
 
-def focus(tool, via=""):
-    """Bring the app's window to the front. Activating a window makes Windows switch to the
-    virtual desktop that holds it; if that does not happen, try the Alt+Tab-style switch."""
-    hwnd = app_window(tool)
+def focus(tool, via="", session="", folder="", host=""):
+    """Bring the app's (or the hosting editor's) window to the front, on the conversation when
+    the link names one. Activating a window makes Windows switch to the virtual desktop that
+    holds it; if that does not happen, try the Alt+Tab-style switch."""
+    exe = HOST_EXES.get(host) or APPS[tool]
+    opened = not host and open_conversation(tool, session)
+    hwnd = app_window(exe, 3 if opened else 0, folder) or reveal(exe)
+    if not hwnd and opened:  # the link started the app; give it time to open its window
+        hwnd = app_window(exe, 10, folder)
     if not hwnd:
         result = "no window"
     else:
@@ -352,7 +445,8 @@ def focus(tool, via=""):
         if not shown(hwnd):
             user32.SwitchToThisWindow(hwnd, True)
             result = "ok (alt-tab)" if shown(hwnd) else ("hidden" if cloaked(hwnd) else "denied")
-    log(f"FOCUS {tool} {result}" + (f" via={via}" if via else ""))
+    log(f"FOCUS {tool} {result}" + (f" via={via}" if via else "") + (f" session={session}" if opened else "")
+        + (f" host={host}" if host else ""))
     return result
 
 
@@ -401,7 +495,8 @@ def stop(tool, ev, cfg):
         return
     queue(tool, key, {"tool": tool, "elapsed": elapsed, "folder": st.get("folder"),
                       "prompt": st.get("prompt"), "answer": ev.get("last_assistant_message"),
-                      "error": error, "transcript": ev.get("transcriptPath")})
+                      "error": error, "transcript": ev.get("transcriptPath"),
+                      "session": conversation(tool, ev)})
 
 
 def agy_transcript(path):
@@ -428,7 +523,7 @@ def message(m):
         except (OSError, ValueError):
             pass
     error = m.get("error")
-    lines = [f"{'❌' if error else '✅'} {NAMES[m['tool']]} "
+    lines = [f"{'❌' if error else '✅'} {label(m['tool'], m.get('host', ''))} "
              f"{'작업 중단' if error else '답변 도착'} · {duration(m['elapsed'])}"]
     if m.get("folder"):
         lines.append(f"📁 {m['folder']}")
@@ -442,10 +537,11 @@ def message(m):
 
 
 def queue(tool, key, msg):
-    app = find_app(tool)
-    if app is None:
+    found = find_app(tool)
+    if found is None:
         log(f"SKIP {tool} not from a desktop app window")
         return
+    app, msg["host"] = found
     token = str(time.time_ns())
     name = f"pending-{key}.json"
     (STATE / name).write_text(json.dumps({"token": token, "app": app, "msg": msg},
@@ -485,7 +581,8 @@ def wait(name, token, cfg):
             break
         time.sleep(2)
     path.unlink(missing_ok=True)
-    send(cfg, message(p["msg"]), p["msg"].get("tool"))
+    m = p["msg"]
+    send(cfg, message(m), m.get("tool"), m.get("session", ""), m.get("folder", ""), m.get("host", ""))
 
 
 def cleanup():
@@ -624,11 +721,11 @@ def manage(args):
         elif cmd == "webhook":
             webhook(rest[0] if rest else None)
         elif cmd == "focus" and rest and rest[0] in APPS:
-            print(focus(rest[0]))
+            print(focus(rest[0], session=rest[1] if len(rest) > 1 else ""))
         elif cmd in ("status", "test", "server"):
             {"status": status, "test": test, "server": server}[cmd]()
         else:
-            raise Fail("사용법: notify.py status | set <설정> <값> | webhook [파일] | test | server | focus <앱>")
+            raise Fail("사용법: notify.py status | set <설정> <값> | webhook [파일] | test | server | focus <앱> [대화 ID]")
         return 0
     except Fail as e:
         print(f"실패: {e}")
@@ -647,7 +744,7 @@ def main():
         serve()
         return
     tool, event = args[0], args[1]
-    raw = sys.stdin.buffer.read().decode("utf-8", "replace") if not sys.stdin.isatty() else ""
+    raw = sys.stdin.buffer.read().decode("utf-8-sig", "replace") if not sys.stdin.isatty() else ""
     ev = json.loads(raw) if raw.strip() else {}
     if tool == "agy":
         tool = agy_client(ev)
@@ -663,7 +760,8 @@ def main():
     elif event == "stop":
         stop(tool, ev, cfg)
     elif event == "permission" and ev.get("notification_type", "permission_prompt") == "permission_prompt":
-        queue(tool, session_key(tool, ev), {"tool": tool, "text": f"⏸ {NAMES[tool]} 승인 기다림\n{short(ev.get('message'), 120)}"})
+        queue(tool, session_key(tool, ev), {"tool": tool, "text": f"⏸ {NAMES[tool]} 승인 기다림\n{short(ev.get('message'), 120)}",
+                                            "folder": folder(ev), "session": conversation(tool, ev)})
 
 
 if __name__ == "__main__":

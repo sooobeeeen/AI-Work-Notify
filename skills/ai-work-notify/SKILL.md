@@ -5,7 +5,7 @@ description: 카카오워크 'AI 작업 알림'을 관리한다. Claude Code·Co
 
 # AI 작업 알림 관리
 
-알림 장치는 `%USERPROFILE%\.kakaowork-notify\notify.py`에 설치되어 있다. Claude Code·Codex·Antigravity의 훅이 이 파일을 부른다. 답변이 끝나고 `unread_seconds`초 안에 사용자가 그 앱 창을 보지 않으면, 카카오워크 웹훅으로 1:1 방에 알림을 보낸다. 알림에는 그 앱으로 넘어가는 단추가 붙는다.
+알림 장치는 `%USERPROFILE%\.kakaowork-notify\notify.py`에 설치되어 있다. Claude Code·Codex·Antigravity의 훅이 이 파일을 부른다. 답변이 끝나고 `unread_seconds`초 안에 사용자가 그 앱 창을 보지 않으면, 카카오워크 웹훅으로 1:1 방에 알림을 보낸다. 알림에는 그 앱으로 넘어가는 단추가 붙는다. Claude Code와 Codex의 단추는 질문한 그 대화를 열고(`claude://code/continue?session=…`, `codex://threads/…`), VS Code(Claude Code·Codex 확장)와 Antigravity는 대화를 여는 링크가 없어 그 작업 폴더 이름이 제목에 있는 창을 고른다. 창을 X로 닫아 트레이에 숨어 있어도 다시 띄운다(VS Code는 X로 닫으면 종료되므로 "no window").
 
 명령은 Claude Code(Bash)와 Codex(PowerShell)에서 똑같이 쓴다. Codex에서는 사용자 폴더 쓰기와 네트워크가 필요하므로 샌드박스 밖 실행 승인을 요청한다.
 
@@ -33,7 +33,7 @@ Bash에서는 `python ~/.kakaowork-notify/notify.py status`처럼 쓴다. 실패
 | Antigravity IDE만 / 앱만 | `set antigravity ide` / `set antigravity app` (기본 `app,ide`) |
 | 웹훅 주소 넣어 줘 / 바꿔 줘 | 사용자가 주소를 복사했는지 확인한 뒤 `webhook`. 클립보드를 못 읽으면 메모장 파일에 저장하게 하고 `webhook <파일>`, 그 파일은 지우게 한다 |
 | 알림 시험해 줘 | `test`. 1:1 방에 왔는지 사용자에게 확인받는다 |
-| 이동 단추가 안 돼 | `server` |
+| 이동 단추가 안 돼 | `server`. 창은 뜨는데 다른 대화가 보이면: 1.1.0 전에 온 알림(단추에 대화 ID 없음)이거나, Codex에서 보관(archive)한 대화(Codex 앱이 열지 못함)다. 새 알림으로 다시 해 보게 한다. Antigravity는 원래 대화까지는 못 바꾼다 |
 | 상태 보여 줘 | `status` |
 
 설정 변경은 다음 알림부터 적용된다. 앱을 다시 시작할 필요는 없다.
@@ -46,12 +46,12 @@ Bash에서는 `python ~/.kakaowork-notify/notify.py status`처럼 쓴다. 실패
 | --- | --- |
 | `SENT` | 보냈다. 못 받았으면 웹훅을 연결한 방과 카카오워크 알림 설정을 확인하게 한다. |
 | `READ` | 앱 창을 보고 있어서 보내지 않았다. 정상이다. |
-| `SKIP … not from a desktop app window` | 데스크톱 앱 밖에서 돌린 실행이라 건너뛰었다. `claude -p`, `codex exec`, `agy -p` 같은 실행이면 정상이다. 다만 터미널이나 VS Code에서 쓰는 Claude Code·Codex도 이 줄이 나오고 알림이 오지 않는다. 이 알림은 Claude·Codex 데스크톱 앱과 Antigravity(2.0 앱·IDE)에서만 동작한다고 사용자에게 알린다. |
+| `SKIP … not from a desktop app window` | 창이 있는 앱 밖에서 돌린 실행이라 건너뛰었다. 터미널에서 돌린 `claude`, `claude -p`, `codex exec`, `agy -p`, SDK 스크립트면 정상이다. 이 알림은 Claude·Codex 데스크톱 앱, VS Code의 Claude Code·Codex 확장, Antigravity(2.0 앱·IDE)에서만 동작한다고 사용자에게 알린다. |
 | `FAIL` | 카카오워크가 거절했다. 웹훅이 지워졌으면 새로 만들고 `webhook`을 다시 한다. |
 | `ERROR … HTTPError: HTTP Error 404` | 웹훅이 없어졌다. 새로 만들고 `webhook`을 다시 한다. |
 | `ERROR` (그 밖) | 알림 장치 오류다. 메시지를 사용자에게 알린다. |
 | `DRY` | 웹훅 주소가 없어 기록만 했다. `webhook`으로 넣는다. |
-| `FOCUS <앱> ok` / `hidden` / `denied` / `no window` | 이동 단추 결과: 성공 / 다른 데스크톱으로 못 넘어감 / Windows가 막음 / 그 앱 창이 없음. |
+| `FOCUS <앱> ok` / `hidden` / `denied` / `no window` | 이동 단추 결과: 성공 / 다른 데스크톱으로 못 넘어감 / Windows가 막음 / 그 앱 창이 없음(앱이 꺼져 있음). 뒤에 `session=…`이 붙으면 Claude Code나 Codex에 그 대화를 열라고 전달한 것이고, `host=vscode`면 VS Code 창을 띄운 것이다. |
 | `POPUP not found` / `POPUP still open` | 이동 단추를 누르면 뜨는 카카오워크 작은 창을 못 찾았거나 못 닫았다. 사용자가 닫으면 된다. |
 | 아무 줄도 없음 | 훅이 돌지 않았다. `status`의 [훅]이 "연결됨"인지, Codex 승인 기록이 "있음"인지 본다. 앱을 다시 시작하게 한다. 연결이 없으면 AI-Work-Notify 폴더에서 `python install.py`를 다시 실행한다. |
 
