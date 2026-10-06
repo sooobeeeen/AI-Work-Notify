@@ -208,8 +208,9 @@ def main():
     (DATA / "installed.json").write_text(json.dumps(
         {"version": version, "mode": "runtime-only" if a.runtime_only else "full"}), encoding="utf-8")
     say(f"설치한 판: {version}")
-    if not a.runtime_only:
-        say(NEXT)
+    cfg = json.loads((DATA / "config.json").read_text(encoding="utf-8-sig")) if (DATA / "config.json").exists() else {}
+    if not a.runtime_only and not cfg.get("webhook_url") and not cfg.get("app_key"):
+        say(NEXT)  # first install only; an update of a set-up PC needs none of these steps
 
 
 if __name__ == "__main__":
