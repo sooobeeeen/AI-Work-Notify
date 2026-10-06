@@ -15,8 +15,10 @@ hooks again whenever its hooks change).
 """
 import argparse
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -177,6 +179,10 @@ def install_skill(dry):
         say(f"스킬: {'설치 예정' if dry else '설치함'} -> {dst}")
         if not dry:
             shutil.copytree(src, dst, dirs_exist_ok=True)
+            # copytree copies attributes too, and a package kept in a synced folder (Google Drive)
+            # has read-only folders, which then cannot be deleted; make the copy writable.
+            for path in [dst, *dst.rglob("*")]:
+                os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
 
 
 NEXT = """

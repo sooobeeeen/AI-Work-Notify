@@ -48,6 +48,7 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 | --- | --- |
 | `SENT` | 보냈다. 못 받았으면 웹훅을 연결한 방과 카카오워크 알림 설정을 확인하게 한다. |
 | `READ` | 앱 창을 보고 있어서 보내지 않았다. 정상이다. |
+| `WAIT claude N background task(s) still running` | Claude가 백그라운드 작업(서브에이전트·백그라운드 명령·모니터)을 기다리느라 턴을 멈췄을 뿐이라 알리지 않았다. 정상이다. 모두 끝난 뒤 Claude가 마무리하면 알림이 간다. 작업이 다 끝났는데도 이 줄만 이어지면 Claude 앱의 백그라운드 작업 목록을 확인하게 한다. |
 | `SKIP … not from a desktop app window` | 창이 있는 앱 밖에서 돌린 실행이라 건너뛰었다. 터미널에서 돌린 `claude`, `claude -p`, `codex exec`, `agy -p`, SDK 스크립트면 정상이다. 이 알림은 Claude·Codex 데스크톱 앱, VS Code의 Claude Code·Codex 확장, Antigravity(2.0 앱·IDE)에서만 동작한다고 사용자에게 알린다. |
 | `FAIL` | 카카오워크가 거절했다. 웹훅이 지워졌으면 새로 만들고 `webhook`을 다시 한다. |
 | `ERROR … HTTPError: HTTP Error 404` | 웹훅이 없어졌다. 새로 만들고 `webhook`을 다시 한다. |

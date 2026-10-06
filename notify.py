@@ -480,14 +480,20 @@ def folder(ev):
 # turns, so their state lives until the next prompt. AGY start fires on every model
 # call, so it keeps the first and stop ends the run.
 PER_PROMPT = {"claude", "codex"}
+# Claude's desktop app also fires the prompt hook when it wakes the agent itself: a background
+# task ended (<task-notification>), a background subagent handed back (<agent-message from="…">,
+# sometimes after "Another Claude session sent a message:"), or a CI event. Those continue the
+# user's request. Only these count, so a user's own prompt that starts with a tag (a slash
+# command's <command-name>, pasted HTML) still starts a new request.
+CLAUDE_WAKEUP = re.compile(r"\s*(?:Another Claude session sent a message:\s*)?"
+                           r"<(?:task-notification|agent-message|ci-monitor-event)\b")
+FINISHED = {"completed", "failed", "killed", "stopped", "cancelled"}
 
 
 def start(tool, ev):
     key = session_key(tool, ev)
     path = STATE / f"{key}.json"
-    # Claude's desktop app also fires the prompt hook for system wake-ups such as
-    # <task-notification>; those continue the user's request rather than start one.
-    woke = tool == "claude" and re.match(r"\s*<[\w-]+>", ev.get("prompt") or "")
+    woke = tool == "claude" and CLAUDE_WAKEUP.match(ev.get("prompt") or "")
     if path.exists() and (tool not in PER_PROMPT or woke):
         return
     path.write_text(json.dumps({"ts": time.time(), "prompt": short(ev.get("prompt"), 60),
@@ -501,6 +507,13 @@ def stop(tool, ev, cfg):
     if not path.exists():
         return
     st = json.loads(path.read_text(encoding="utf-8"))
+    # Claude's Stop event lists the background work still running (background_tasks: shells,
+    # subagents, monitors). A turn that ends while some run is a pause, not the answer: the
+    # agent is woken again when they end, and the turn that ends with none left is notified.
+    running = [t for t in ev.get("background_tasks") or [] if t.get("status") not in FINISHED]
+    if tool == "claude" and running:
+        log(f"WAIT {tool} {len(running)} background task(s) still running")
+        return
     if tool not in PER_PROMPT:
         path.unlink()
     elapsed = time.time() - st["ts"]

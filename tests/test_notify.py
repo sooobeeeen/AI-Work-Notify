@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,11 @@ class NotifyTests(unittest.TestCase):
         target = self.root.resolve()
         if target.parent != self.temp_root or not target.name.startswith("ai-work-notify-test-"):
             raise AssertionError("Refusing to remove a path outside the isolated test folder")
-        shutil.rmtree(target)
+
+        def writable(func, path, _):  # read-only folders copied from a synced checkout
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        shutil.rmtree(target, **({"onexc": writable} if sys.version_info >= (3, 12) else {"onerror": writable}))
 
     def pending_for(self, tool):
         key = notify.session_key(tool, self.event)
@@ -67,6 +72,45 @@ class NotifyTests(unittest.TestCase):
         notify.start("claude", {**self.event, "prompt": "<task-notification>done</task-notification>"})
         self.assertEqual(stored.read_bytes(), before)
         self.assertTrue(pending.exists())
+
+    def test_claude_subagent_and_ci_wakeups_keep_original_request(self):
+        notify.start("claude", self.event)
+        stored = self.state / (notify.session_key("claude", self.event) + ".json")
+        before = stored.read_bytes()
+        for prompt in ('<agent-message from="a3082f9692f641e94"> [Subagent hand-back] report',
+                       'Another Claude session sent a message:\n<agent-message from="a1"> [Subagent hand-back]',
+                       "<ci-monitor-event>checks passed</ci-monitor-event>"):
+            notify.start("claude", {**self.event, "prompt": prompt})
+            self.assertEqual(stored.read_bytes(), before, prompt)
+
+    def test_claude_prompt_starting_with_other_tag_is_a_new_request(self):
+        with patch.object(notify.time, "time", return_value=100):
+            notify.start("claude", self.event)
+        event = {**self.event, "prompt": "<command-name>/review</command-name> 검토해줘"}
+        with patch.object(notify.time, "time", return_value=200):
+            notify.start("claude", event)
+        stored = json.loads((self.state / (notify.session_key("claude", event) + ".json")).read_text())
+        self.assertEqual(stored["ts"], 200)
+
+    def test_claude_stop_waits_until_background_tasks_end(self):
+        notify.start("claude", self.event)
+        queued, logged = [], []
+        running = [{"id": "bv90a2sxn", "type": "shell", "status": "running"},
+                   {"id": "abaa9f0a6c1bf0f44", "type": "subagent", "status": "running"}]
+        cfg = {**notify.config(), "min_seconds": 0}
+        with patch.object(notify, "queue", side_effect=lambda *a: queued.append(a)), \
+                patch.object(notify, "log", side_effect=logged.append):
+            notify.stop("claude", {**self.event, "background_tasks": running}, cfg)
+            self.assertEqual(queued, [])
+            self.assertEqual(logged, ["WAIT claude 2 background task(s) still running"])
+            notify.stop("claude", {**self.event, "background_tasks": running[:1]}, cfg)
+            self.assertEqual(queued, [])
+            done = [{**running[0], "status": "completed"}]
+            notify.stop("claude", {**self.event, "background_tasks": done}, cfg)
+            self.assertEqual(len(queued), 1)
+            notify.stop("claude", {**self.event, "background_tasks": []}, cfg)
+            self.assertEqual(len(queued), 2)
+        self.assertEqual(queued[0][2]["prompt"], "first request")
 
     def run_wait(self, change):
         pending = self.pending_for("codex")
@@ -148,6 +192,8 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(json.loads((data / "config.json").read_text()), cfg)
         self.assertEqual(json.loads(hooks.read_text())["hooks"]["Stop"][0]["hooks"][0]["command"], "other-hook.exe")
         self.assertTrue((codex / "skills" / "ai-work-notify" / "SKILL.md").exists())
+        for path in [codex / "skills" / "ai-work-notify", *(codex / "skills" / "ai-work-notify").rglob("*")]:
+            self.assertFalse(path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY, f"{path} left read-only")
         self.assertEqual(json.loads((data / "installed.json").read_text())["mode"], "full")
 
     def test_runtime_only_install_does_not_create_hooks_or_skills(self):
