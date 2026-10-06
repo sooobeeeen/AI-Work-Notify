@@ -184,9 +184,10 @@ def find_app(tool, procs=None, env=os.environ):
         while i + 1 < len(chain) and names[i + 1] == names[i]:  # launcher -> agent (-> Claude app)
             i += 1
         # The desktop app runs the agent as its direct child. Claude's app is named like its
-        # agent, so the top of that run is the app only if it owns a window.
-        if names[i] == APPS[tool] and (chain[i] in window_owners()
-                                       or env.get("CLAUDE_CODE_ENTRYPOINT") == "claude-desktop"):
+        # agent, so the top of that run is the app only if it owns a window. (Not the
+        # entrypoint variable: claude -p started from a desktop session inherits
+        # CLAUDE_CODE_ENTRYPOINT=claude-desktop, seen 2026-10-06.)
+        if names[i] == APPS[tool] and chain[i] in window_owners():
             pass
         elif i + 1 < len(chain) and names[i + 1] == APPS[tool]:
             i += 1
