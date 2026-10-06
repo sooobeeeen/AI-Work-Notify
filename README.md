@@ -68,7 +68,7 @@ Expand-Archive "$dir.zip" $dir -Force
 Get-ChildItem $dir -Directory | Select-Object -First 1 -ExpandProperty FullName   # 이 폴더의 AGENTS.md를 따른다
 ```
 
-이미 설치된 PC(1.2.0 이상)에서 업데이트만 하려면 `python %USERPROFILE%\.kakaowork-notify\notify.py update`를 실행한다.
+이미 설치된 PC(1.2.0 이상)에서 업데이트만 하려면 PowerShell에서 `py -3.13 "$env:USERPROFILE\.kakaowork-notify\notify.py" update`를 실행한다. Python 3.13 대신 다른 지원 버전을 설치했다면 설치 때 확인한 독립 Python의 전체 경로를 쓴다. 따옴표로 감싼 실행 파일 경로 앞에는 `&`를 붙인다.
 
 ## 주의
 
@@ -81,6 +81,8 @@ Get-ChildItem $dir -Directory | Select-Object -First 1 -ExpandProperty FullName 
 
 에이전트에게 "알림이 안 와"라고 하면 됩니다. 직접 보려면 아래 명령의 결과를 확인하세요.
 
+```powershell
+py -3.13 "$env:USERPROFILE\.kakaowork-notify\notify.py" status
 ```
-python %USERPROFILE%\.kakaowork-notify\notify.py status
-```
+
+Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 실행합니다. `%USERPROFILE%`은 cmd.exe 문법입니다. 훅 설정에 저장되는 명령의 따옴표 규칙은 직접 실행하는 셸 명령과 다릅니다.
