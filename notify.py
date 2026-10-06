@@ -487,7 +487,7 @@ def start(tool, ev):
     path = STATE / f"{key}.json"
     # Claude's desktop app also fires the prompt hook for system wake-ups such as
     # <task-notification>; those continue the user's request rather than start one.
-    woke = re.match(r"\s*<[\w-]+>", ev.get("prompt") or "")
+    woke = tool == "claude" and re.match(r"\s*<[\w-]+>", ev.get("prompt") or "")
     if path.exists() and (tool not in PER_PROMPT or woke):
         return
     path.write_text(json.dumps({"ts": time.time(), "prompt": short(ev.get("prompt"), 60),
@@ -596,7 +596,7 @@ def wait(name, token, cfg):
         time.sleep(2)
     path.unlink(missing_ok=True)
     m = p["msg"]
-    send(cfg, message(m), m.get("tool"), m.get("session", ""), m.get("folder", ""), m.get("host", ""))
+    send(config(), message(m), m.get("tool"), m.get("session", ""), m.get("folder", ""), m.get("host", ""))
 
 
 def cleanup():
@@ -744,10 +744,7 @@ def status():
         hooked = path.exists() and any(m in path.read_text(encoding="utf-8-sig") for m in me)
         print(f"  {name}: {'연결됨' if hooked else '없음'} ({path})")
         if name == "Codex" and hooked:
-            toml = Path.home() / ".codex" / "config.toml"
-            text = toml.read_text(encoding="utf-8") if toml.exists() else ""
-            trusted = all(f".codex\\hooks.json:{ev}:0:0" in text for ev in ("user_prompt_submit", "stop"))
-            print(f"  Codex 훅 승인 기록: {'있음' if trusted else '없음 (Codex에서 /hooks로 승인해야 동작)'}")
+            print("  Codex 훅 승인: /hooks에서 현재 훅 정의의 승인 여부를 확인하세요.")
     print(f"  앱 이동 단추 서버(127.0.0.1:{PORT}): {'켜짐' if server_running() else '꺼짐 (server로 켬)'}")
     pending = sorted(p.name[8:-5] for p in STATE.glob("pending-*.json"))
     print(f"[대기 중인 알림] {len(pending)}건" + (": " + ", ".join(pending) if pending else ""))
