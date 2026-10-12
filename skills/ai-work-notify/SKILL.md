@@ -5,9 +5,9 @@ description: 카카오워크 'AI 작업 알림'을 관리한다. Claude Code·Co
 
 # 스킬: AI 작업 알림 관리
 
-알림 장치는 `%USERPROFILE%\.kakaowork-notify\notify.py`에 설치되어 있다. Claude Code·Codex·Antigravity의 훅이 이 파일을 부른다. 답변이 끝나고 `unread_seconds`초 안에 사용자가 그 앱 창을 보지 않으면, 카카오워크 웹훅으로 1:1 방에 알림을 보낸다. 알림에는 그 앱으로 넘어가는 단추가 붙는다. Claude Code와 Codex의 단추는 질문한 그 대화를 열고(`claude://code/continue?session=…`, `codex://threads/…`), VS Code(Claude Code·Codex 확장)와 Antigravity는 대화를 여는 링크가 없어 그 작업 폴더 이름이 제목에 있는 창을 고른다. 창을 X로 닫아 트레이에 숨어 있어도 다시 띄운다(VS Code는 X로 닫으면 종료되므로 "no window"). 1.3.0부터는 답변 알림을 처리한 뒤 하루에 한 번 GitHub에서 최신 판을 확인해, 새 판이 나오면 1:1 방으로 판마다 한 번 알린다.
+알림 장치는 `%USERPROFILE%\.kakaowork-notify\notify.py`에 설치되어 있다. Claude Code·Codex·Antigravity의 훅이 이 파일을 부른다. 답변이 끝나고 `unread_seconds`초 안에 사용자가 그 앱 창을 보지 않으면, 카카오워크 웹훅으로 1:1 방에 알림을 보낸다. 알림에는 그 앱으로 넘어가는 단추가 붙는다. Claude Code와 Codex의 단추는 질문한 그 대화를 열고(`claude://code/continue?session=…`, `codex://threads/…`), VS Code(Claude Code·Codex 확장)와 Antigravity는 대화를 여는 링크가 없어 그 작업 폴더 이름이 제목에 있는 창을 고른다. 창을 X로 닫아 트레이에 숨어 있어도 다시 띄운다(VS Code는 X로 닫으면 종료되므로 "no window"). 1.3.0부터는 답변 알림을 처리한 뒤 하루에 한 번 GitHub에서 최신 판을 확인해, 새 판이 나오면 1:1 방으로 판마다 한 번 알린다. 1.4.0부터는 Claude Code·Codex가 질문을 띄우거나("❓ 질문 기다림", 질문과 선택지 앞부분) 승인을 기다릴 때("⏸ 승인 기다림")도 같은 방식으로 알린다. Claude Code는 원래 있던 승인 훅으로, Codex는 새 훅 2개(`PreToolUse`의 질문 도구, `PermissionRequest`)로 안다. Codex의 질문 카드는 대부분 답을 기다리지 않는 종류라, 에이전트는 작업을 이어 가고 Codex 앱은 한동안 답이 없으면 빈 답으로 넘어간다.
 
-Codex(PowerShell)에서는 아래처럼 실행한다. `status`는 읽기만 하므로 먼저 기본 권한으로 실행한다. 설정 변경·업데이트·시험 발송처럼 사용자 폴더 쓰기나 네트워크가 필요한 명령은 샌드박스가 막으면 실행 승인을 요청한다.
+Codex(PowerShell)에서는 아래처럼 실행한다. `status`는 읽기만 하므로 먼저 기본 권한으로 실행한다. 설정 변경·업데이트·시험 발송처럼 사용자 폴더 쓰기나 네트워크가 필요한 명령은 샌드박스가 막으면 실행 승인을 요청한다. 샌드박스에서 `No installed Python found!`가 나오면 사용자 범위로 설치한 Python이 샌드박스에서 보이지 않는 것이다. 같은 명령을 실행 승인을 받아 샌드박스 밖에서 다시 실행한다.
 
 ```powershell
 py -3.13 "$env:USERPROFILE\.kakaowork-notify\notify.py" status
@@ -34,7 +34,7 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 | Antigravity IDE만 / 앱만 | `set antigravity ide` / `set antigravity app` (기본 `app,ide`) |
 | 웹훅 주소 넣어 줘 / 바꿔 줘 | 사용자가 주소를 복사했는지 확인한 뒤 `webhook`. 클립보드를 못 읽으면 메모장 파일에 저장하게 하고 `webhook <파일>`, 그 파일은 지우게 한다 |
 | 알림 시험해 줘 | `test`. 1:1 방에 왔는지 사용자에게 확인받는다 |
-| 업데이트해 줘 | `update`. GitHub(sooobeeeen/AI-Work-Notify) 최신 릴리즈가 더 새로울 때만 받아 설치한다. 설정·웹훅 주소·훅은 그대로다. `update`가 없다고 나오면(1.2.0 전 판) 저장소 주소로 처음 설치하듯 다시 설치한다 |
+| 업데이트해 줘 | `update`. GitHub(sooobeeeen/AI-Work-Notify) 최신 릴리즈가 더 새로울 때만 받아 설치한다. 설정·웹훅 주소와 이미 있는 훅은 그대로다. 출력에 "Codex: 훅 연결함"이 나오면 새 판이 Codex 훅을 더한 것이니(1.4.0의 질문·승인 알림 훅 2개 등), Codex의 `/hooks`에서 새 훅을 승인하게 한다. 이미 승인한 훅은 다시 승인할 필요가 없다. `update`가 없다고 나오면(1.2.0 전 판) 저장소 주소로 처음 설치하듯 다시 설치한다 |
 | 새 판 있어? | `status`의 [판] 줄을 본다(알림 장치가 하루 한 번 확인한 결과와 확인 날짜). 방금 나온 판까지 보려면 설치된 판과 GitHub 최신 릴리즈(`https://api.github.com/repos/sooobeeeen/AI-Work-Notify/releases/latest`의 `tag_name`)를 비교한다. 판 확인 요청만으로 `update`를 실행하지 않는다 |
 | 이동 단추가 안 돼 | `server`. 창은 뜨는데 다른 대화가 보이면: 1.1.0 전에 온 알림(단추에 대화 ID 없음)이거나, Codex에서 보관(archive)한 대화(Codex 앱이 열지 못함)다. 새 알림으로 다시 해 보게 한다. Antigravity는 원래 대화까지는 못 바꾼다 |
 | 상태 보여 줘 | `status` |
@@ -48,7 +48,8 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 | 최근 기록 | 뜻과 할 일 |
 | --- | --- |
 | `SENT` | 보냈다. 못 받았으면 웹훅을 연결한 방과 카카오워크 알림 설정을 확인하게 한다. |
-| `READ` | 앱 창을 보고 있어서 보내지 않았다. 정상이다. |
+| `READ` | 앱 창을 보고 있어서 보내지 않았다. 정상이다. `READ ask-…`는 질문·승인 알림이다. |
+| `SKIP codex approval was decided without the user` | Codex가 승인을 물었지만 사용자 없이 정해졌다(이번 대화에서 "계속 허용"한 명령, 자동 검토). 에이전트가 이미 작업을 이어 가서 보내지 않았다. 정상이다. |
 | `SENT 🆕 AI 작업 알림 새 판 …` | 새 판 알림을 보냈다. 판마다 한 번만 보낸다. |
 | `RELEASE check failed …` | GitHub에서 최신 판을 확인하지 못했다(인터넷 연결이나 회사 방화벽). 다음 날 다시 확인한다. 답변 알림과는 상관없다. |
 | `SKIP codex … is not a saved conversation` | Codex 앱이 스스로 돌린 요청(다음 질문 추천 등, 저장되지 않는 임시 대화)이라 보내지 않았다. 정상이다. 사용자가 보낸 질문인데 이 줄이 나오면 그 대화가 `~/.codex/sessions`에 저장돼 있는지 확인한다. |
@@ -62,7 +63,8 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 | `BLOCKED … request from a web page` | 카카오워크가 아닌 웹 페이지가 이동 단추 주소를 불러서 거절했다. 정상이다. 카카오워크 단추를 눌렀는데 이 줄이 나오면 카카오워크 작은 창의 제목이 바뀌었을 수 있으니 사용자에게 알린다. |
 | `REQUEST … from KakaoWork's window` | 카카오워크 작은 창이 연 요청이라 받아들였다. 정상이다. |
 | `POPUP not found` / `POPUP still open` | 이동 단추를 누르면 뜨는 카카오워크 작은 창을 못 찾았거나 못 닫았다. 사용자가 닫으면 된다. |
-| 아무 줄도 없음 | 훅이 돌지 않았다. `status`의 [훅]이 "연결됨"인지 보고, Codex의 `/hooks`에서 현재 알림 훅 2개가 승인됐는지 확인하게 한다. 앱을 다시 시작하게 한다. 연결이 없으면 AI-Work-Notify 폴더에서 `py -3.13 install.py`를 다시 실행한다. |
+| Codex 질문·승인 알림만 안 옴 | Codex의 `/hooks`에서 새 훅 2개(질문 도구의 `PreToolUse`, `PermissionRequest`)가 승인됐는지 본다. Codex 앱이 오래됐으면 이 두 알림만 오지 않는다(답변 알림은 그대로다). PowerShell에서 `& "$((Get-AppxPackage OpenAI.Codex).InstallLocation)\app\resources\codex.exe" --version`이 `codex-cli 0.153` 전이면 Codex 앱을 업데이트하게 한다. |
+| 아무 줄도 없음 | 훅이 돌지 않았다. `status`의 [훅]이 "연결됨"인지 보고, Codex의 `/hooks`에서 현재 알림 훅 4개(답변 2개, 질문·승인 2개)가 승인됐는지 확인하게 한다. 앱을 다시 시작하게 한다. 연결이 없으면 AI-Work-Notify 폴더에서 `py -3.13 install.py`를 다시 실행한다. |
 
 ## 알림을 아예 지우려면
 

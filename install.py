@@ -1,6 +1,7 @@
 """Install or update the AI work notifier (KakaoWork) on this PC.
 
     python install.py                 notify.py, hooks for the apps found here, and the ai-work-notify skill
+    python install.py --no-skill      the same without the skill (a PC that manages it another way)
     python install.py --runtime-only  update notify.py only (hooks, settings and skills untouched)
     python install.py --dry-run       show what would change and change nothing
 
@@ -32,7 +33,7 @@ DATA = HOME / ".kakaowork-notify"
 SKILL = "ai-work-notify"
 NEW_CONFIG = {"webhook_url": "", "enabled": True, "unread_seconds": 30, "min_seconds": 0,
               "antigravity": ["app", "ide"]}
-OURS = re.compile(r"notify\.py (claude|codex|agy) (start|stop|permission)$")
+OURS = re.compile(r"notify\.py (claude|codex|agy) (start|stop|permission|ask)$")
 
 
 def say(msg):
@@ -77,10 +78,11 @@ def restart_server():
 # --- hooks -------------------------------------------------------------------------
 
 def merge_grouped(data, wanted):
-    """Claude Code and Codex: {"hooks": {event: [{"matcher"?, "hooks": [{type, command, timeout}]}]}}."""
+    """Claude Code and Codex: {"hooks": {event: [{"matcher"?, "hooks": [{type, command, timeout}]}]}}.
+    wanted: {event: (matcher or None, command[, more handler fields])}."""
     hooks = data.setdefault("hooks", {})
     changed = False
-    for event, (matcher, command) in wanted.items():
+    for event, (matcher, command, *more) in wanted.items():
         groups = hooks.setdefault(event, [])
         for group in list(groups):
             entries = group.get("hooks", [])
@@ -92,7 +94,8 @@ def merge_grouped(data, wanted):
                 else:
                     groups.remove(group)
         if not any(h.get("command") == command for g in groups for h in g.get("hooks", [])):
-            group = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+            # appended after other groups: Codex keys its approval by position
+            group = {"hooks": [{"type": "command", "command": command, "timeout": 10, **(more[0] if more else {})}]}
             groups.append({"matcher": matcher, **group} if matcher else group)
             changed = True
     return changed
@@ -109,22 +112,24 @@ def merge_named(data, base):
 
 
 def update_hooks(name, path, merge, dry):
+    """True when hooks were (or, with dry, would be) added."""
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except ValueError:
         say(f"{name}: {path}를 읽지 못해 건너뜀 (JSON 형식 오류). 직접 확인이 필요합니다.")
-        return
+        return False
     if not merge(data):
         say(f"{name}: 훅 이미 연결됨")
-        return
+        return False
     say(f"{name}: 훅 {'연결 예정' if dry else '연결함'} ({path})")
     if dry:
-        return
+        return True
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = path.with_name(path.name + ".before-ai-work-notify")
     if path.exists() and not backup.exists():
         shutil.copy2(path, backup)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return True
 
 
 def install_hooks(dry):
@@ -145,9 +150,15 @@ def install_hooks(dry):
             "Notification": ("permission_prompt", f"{base} claude permission")}), dry)
     if (HOME / ".codex").is_dir():
         found = True
-        update_hooks("Codex", HOME / ".codex" / "hooks.json", lambda d: merge_grouped(d, {
-            "UserPromptSubmit": (None, f"{base} codex start"),
-            "Stop": (None, f"{base} codex stop")}), dry)
+        # The waiting hooks run in the background ("async"): they only notify, so they must never
+        # hold up a question or an approval, or answer one (a synchronous hook exiting 2 would).
+        if update_hooks("Codex", HOME / ".codex" / "hooks.json", lambda d: merge_grouped(d, {
+                "UserPromptSubmit": (None, f"{base} codex start"),
+                "Stop": (None, f"{base} codex stop"),
+                "PreToolUse": ("request_user_input|request_user_input_async", f"{base} codex ask", {"async": True}),
+                "PermissionRequest": (None, f"{base} codex permission", {"async": True})}), dry):
+            # An update runs with the old skill's instructions, so say it here for the agent to pass on.
+            say("  Codex에서 /hooks를 열어 새로 생긴 알림 훅을 승인해야 Codex 알림이 옵니다 (이미 승인한 훅은 그대로).")
     if (HOME / ".gemini").is_dir():
         found = True
         update_hooks("Antigravity", HOME / ".gemini" / "config" / "hooks.json", lambda d: merge_named(d, base), dry)
@@ -191,14 +202,16 @@ NEXT = """
    이름(예: AI 작업 알림, 알림 보낸 사람으로 보임)을 정하고 채팅방은 1:1 채팅방을 고릅니다.
 2. 만든 웹훅 주소를 복사한 뒤 에이전트에게 "웹훅 주소 넣어줘"라고 합니다 (주소를 대화창에 붙이지 않습니다).
 3. 에이전트가 시험 메시지를 보내면 카카오워크 1:1 방에 왔는지 확인합니다.
-4. Codex를 쓰면 Codex에서 /hooks를 열어 알림 훅 2개를 승인합니다. 안 하면 Codex 알림만 오지 않습니다.
+4. Codex를 쓰면 Codex에서 /hooks를 열어 알림 훅 4개를 승인합니다. 안 하면 Codex 알림만 오지 않습니다.
 5. Claude Code, Codex, VS Code, Antigravity를 다시 시작합니다. 훅은 새 대화부터 적용됩니다.
 """
 
 
 def main():
     p = argparse.ArgumentParser(description="AI 작업 알림(카카오워크) 설치")
-    p.add_argument("--runtime-only", action="store_true", help="notify.py만 갱신")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--runtime-only", action="store_true", help="notify.py만 갱신")
+    mode.add_argument("--no-skill", action="store_true", help="스킬 없이 설치 (스킬을 따로 관리하는 PC)")
     p.add_argument("--dry-run", action="store_true", help="바뀔 것만 보여 주고 아무것도 바꾸지 않음")
     a = p.parse_args()
     sys.stdout.reconfigure(errors="replace")
@@ -206,13 +219,15 @@ def main():
     if not a.runtime_only:
         install_config(a.dry_run)
         install_hooks(a.dry_run)
-        install_skill(a.dry_run)
+        if not a.no_skill:
+            install_skill(a.dry_run)
     if a.dry_run:
         return
     # notify.py update reads this to compare with the latest release and to repeat the same mode
     version = (PKG / "VERSION").read_text(encoding="utf-8").strip()
     (DATA / "installed.json").write_text(json.dumps(
-        {"version": version, "mode": "runtime-only" if a.runtime_only else "full"}), encoding="utf-8")
+        {"version": version, "mode": "runtime-only" if a.runtime_only else "no-skill" if a.no_skill else "full"}),
+        encoding="utf-8")
     say(f"설치한 판: {version}")
     cfg = json.loads((DATA / "config.json").read_text(encoding="utf-8-sig")) if (DATA / "config.json").exists() else {}
     if not a.runtime_only and not cfg.get("webhook_url") and not cfg.get("app_key"):

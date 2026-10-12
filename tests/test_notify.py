@@ -55,6 +55,8 @@ class NotifyTests(unittest.TestCase):
             notify.start("codex", self.event)
         pending = self.pending_for("codex")
         pending.write_text('{"token":"old"}', encoding="utf-8")
+        asked = self.state / ("pending-ask-" + notify.session_key("codex", self.event) + ".json")
+        asked.write_text('{"token":"old"}', encoding="utf-8")
         event = {**self.event, "prompt": "<request>second request</request>"}
         with patch.object(notify.time, "time", return_value=200):
             notify.start("codex", event)
@@ -62,6 +64,7 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(stored["ts"], 200)
         self.assertEqual(stored["prompt"], event["prompt"])
         self.assertFalse(pending.exists())
+        self.assertFalse(asked.exists())
 
     def test_claude_system_wakeup_keeps_original_request(self):
         notify.start("claude", self.event)
@@ -82,6 +85,25 @@ class NotifyTests(unittest.TestCase):
                        "<ci-monitor-event>checks passed</ci-monitor-event>"):
             notify.start("claude", {**self.event, "prompt": prompt})
             self.assertEqual(stored.read_bytes(), before, prompt)
+
+    def test_codex_question_reply_goes_on_with_the_request(self):
+        with patch.object(notify.time, "time", return_value=100):
+            notify.start("codex", self.event)
+        key = notify.session_key("codex", self.event)
+        stored = self.state / (key + ".json")
+        before = stored.read_bytes()
+        pending = [self.state / f"pending-{key}.json", self.state / f"pending-ask-{key}.json"]
+        for p in pending:
+            p.write_text('{"token":"old"}', encoding="utf-8")
+        reply = ('<send_user_message_question_reply>\n[{"questionItemId":"[\\"request_user_input_async\\",\\"call_1\\"]",'
+                 '"question":"어느 쪽?","answer":"A"}]\n</send_user_message_question_reply>')
+        with patch.object(notify.time, "time", return_value=200):
+            notify.start("codex", {**self.event, "prompt": reply})
+        self.assertEqual(stored.read_bytes(), before)
+        self.assertFalse(any(p.exists() for p in pending))
+        stored.unlink()  # no request on record (cleaned up): the reply starts one
+        notify.start("codex", {**self.event, "prompt": reply})
+        self.assertEqual(json.loads(stored.read_text(encoding="utf-8"))["prompt"], "(질문에 답함)")
 
     def test_claude_prompt_starting_with_other_tag_is_a_new_request(self):
         with patch.object(notify.time, "time", return_value=100):
@@ -143,6 +165,80 @@ class NotifyTests(unittest.TestCase):
         rollout.parent.mkdir(parents=True)
         rollout.write_text("{}\n")
         run()
+        self.assertEqual(len(sent), 1)
+
+    def test_codex_thread_continued_in_a_suffixed_rollout_counts_as_saved(self):
+        codex_home = self.root / "codex-home"
+        session = "01a0fa73-5d20-7a21-b259-73a6679957c0"
+        rollout = (codex_home / "sessions" / "2026" / "10" / "12" /
+                   f"rollout-2026-10-12T11-39-41-{session}_01a12dfa-ea1c-73b2-a27d-4cb718ed4c1c.jsonl")
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text("{}\n")
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}):
+            self.assertTrue(notify.codex_saved(session))
+            self.assertFalse(notify.codex_saved("01a12da6-2542-7703-a95e-c7e3774e627e"))
+
+    def test_claude_question_and_permission_prompts(self):
+        transcript = self.root / "claude.jsonl"
+        ask = {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "AskUserQuestion",
+               "input": {"questions": [
+                   {"question": "회색은 **어떻게** 맞출까요?", "header": "색", "multiSelect": False,
+                    "options": [{"label": "팔레트 유지", "description": "-"}, {"label": "둘 다 맞춤", "description": "-"}]},
+                   {"question": "두 번째 질문", "header": "둘", "multiSelect": False, "options": []}]}}]}}
+        transcript.write_text('{"cut line\n' + json.dumps(ask, ensure_ascii=False) + "\n", encoding="utf-8")
+        queued = []
+        with patch.object(notify, "queue", side_effect=lambda *a: queued.append(a)):
+            notify.waiting("claude", "permission", {**self.event, "transcript_path": str(transcript),
+                                                    "notification_type": "permission_prompt",
+                                                    "message": "Claude needs your permission to use AskUserQuestion"})
+            notify.waiting("claude", "permission", {**self.event, "message": "Claude needs your permission to use Bash"})
+            notify.waiting("claude", "permission", {**self.event, "notification_type": "idle_prompt"})
+        self.assertEqual(len(queued), 2)
+        self.assertEqual(queued[0][1], "ask-" + notify.session_key("claude", self.event))
+        where = f"📁 {self.root.name}"
+        self.assertEqual(notify.message(queued[0][2]),
+                         f"❓ Claude Code 질문 기다림\n{where}\n💬 회색은 어떻게 맞출까요? (외 1개)\n↳ 팔레트 유지 · 둘 다 맞춤")
+        self.assertEqual(notify.message(queued[1][2]),
+                         f"⏸ Claude Code 승인 기다림\n{where}\n💬 Claude needs your permission to use Bash")
+
+    def test_codex_questions_and_approvals(self):
+        queued = []
+        with patch.object(notify, "queue", side_effect=lambda *a: queued.append(a)):
+            notify.waiting("codex", "ask", {**self.event, "tool_name": "request_user_input_async", "tool_input": json.dumps(
+                {"questions": [{"title": "어느 쪽으로 할까요?", "options": ["A안", "B안"]}]}, ensure_ascii=False)})
+            notify.waiting("codex", "ask", {**self.event, "tool_name": "request_user_input", "tool_input": {"questions": [
+                {"id": "q", "header": "범위", "question": "범위는?", "options": [{"label": "전체", "description": "-"}]}]}})
+            notify.waiting("codex", "permission", {**self.event, "tool_name": "Bash", "transcript_path": "rollout.jsonl",
+                                                   "tool_input": {"command": ["powershell", "-Command", "Remove-Item x"]}})
+            notify.waiting("codex", "permission", {**self.event, "tool_name": "apply_patch", "tool_input": {"command": "*** Begin"}})
+        where = f"📁 {self.root.name}"
+        self.assertEqual([notify.message(q[2]) for q in queued], [
+            f"❓ Codex 질문 기다림\n{where}\n💬 어느 쪽으로 할까요?\n↳ A안 · B안\n⏳ 답하지 않으면 잠시 뒤 답 없이 진행합니다",
+            f"❓ Codex 질문 기다림\n{where}\n💬 범위는?\n↳ 전체",
+            f"⏸ Codex 승인 기다림\n{where}\n💬 powershell -Command Remove-Item x",
+            f"⏸ Codex 승인 기다림\n{where}\n💬 파일 수정"])
+        self.assertEqual({q[1] for q in queued}, {"ask-" + notify.session_key("codex", self.event)})
+
+    def test_codex_approval_given_without_the_user_is_not_sent(self):
+        rollout = self.root / "rollout.jsonl"
+        rollout.write_text("{}\n")
+        pending = self.state / "pending-ask-codex-x.json"
+        sent, logged = [], []
+
+        def run(since):
+            pending.write_text(json.dumps({"token": "t", "app": 123, "msg": {
+                "tool": "codex", "kind": "permission", "detail": "명령", "rollout": str(rollout), "since": since}}))
+            with patch.object(notify.time, "time", side_effect=[0, 31]), \
+                    patch.object(notify, "user_is_watching", return_value=False), \
+                    patch.object(notify, "send", side_effect=lambda *a: sent.append(a)), \
+                    patch.object(notify, "log", side_effect=logged.append):
+                notify.wait(pending.name, "t", notify.config())
+
+        written = rollout.stat().st_mtime
+        run(since=written - 60)  # the agent went on after the request: approved without the user
+        self.assertEqual(sent, [])
+        self.assertEqual(logged, ["SKIP codex approval was decided without the user"])
+        run(since=written)  # nothing since: the prompt still waits
         self.assertEqual(len(sent), 1)
 
     def run_wait(self, change):
@@ -223,11 +319,45 @@ class NotifyTests(unittest.TestCase):
             install.main()
         self.assertEqual(hooks.read_bytes(), before)
         self.assertEqual(json.loads((data / "config.json").read_text()), cfg)
-        self.assertEqual(json.loads(hooks.read_text())["hooks"]["Stop"][0]["hooks"][0]["command"], "other-hook.exe")
+        codex_hooks = json.loads(hooks.read_text())["hooks"]
+        self.assertEqual(codex_hooks["Stop"][0]["hooks"][0]["command"], "other-hook.exe")
+        self.assertNotIn("async", codex_hooks["Stop"][-1]["hooks"][0])
+        self.assertEqual(codex_hooks["PreToolUse"][0]["matcher"], "request_user_input|request_user_input_async")
+        self.assertTrue(codex_hooks["PreToolUse"][0]["hooks"][0]["async"])
+        self.assertTrue(codex_hooks["PermissionRequest"][0]["hooks"][0]["async"])
+        self.assertNotIn("matcher", codex_hooks["PermissionRequest"][0])
         self.assertTrue((codex / "skills" / "ai-work-notify" / "SKILL.md").exists())
         for path in [codex / "skills" / "ai-work-notify", *(codex / "skills" / "ai-work-notify").rglob("*")]:
             self.assertFalse(path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY, f"{path} left read-only")
         self.assertEqual(json.loads((data / "installed.json").read_text())["mode"], "full")
+
+    def install(self, *flags):
+        data = self.root / ".kakaowork-notify"
+        with patch.object(install, "HOME", self.root), patch.object(install, "DATA", data), \
+                patch.object(install, "restart_server"), patch.object(sys, "argv", ["install.py", *flags]), \
+                contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
+            install.main()
+        return data
+
+    def test_update_from_1_3_0_adds_codex_waiting_hooks_and_keeps_the_approved_ones(self):
+        (self.root / ".codex").mkdir()
+        hooks = self.root / ".codex" / "hooks.json"
+        self.install()
+        current = json.loads(hooks.read_text())
+        old = {"hooks": {k: v for k, v in current["hooks"].items() if k in ("UserPromptSubmit", "Stop")}}
+        hooks.write_text(json.dumps(old))  # what 1.3.0 installed
+        self.install()
+        again = json.loads(hooks.read_text())["hooks"]
+        for event in ("UserPromptSubmit", "Stop"):  # same entries at the same place: still approved
+            self.assertEqual(again[event], old["hooks"][event])
+        self.assertEqual(again, current["hooks"])
+
+    def test_no_skill_install_adds_hooks_without_the_skill(self):
+        (self.root / ".codex").mkdir()
+        data = self.install("--no-skill")
+        self.assertIn("PermissionRequest", json.loads((self.root / ".codex" / "hooks.json").read_text())["hooks"])
+        self.assertFalse((self.root / ".codex" / "skills").exists())
+        self.assertEqual(json.loads((data / "installed.json").read_text())["mode"], "no-skill")
 
     def test_runtime_only_install_does_not_create_hooks_or_skills(self):
         data = self.root / ".kakaowork-notify"
@@ -248,19 +378,24 @@ class NotifyTests(unittest.TestCase):
             notify.update()
         self.assertEqual(github.call_count, 1)
 
-    def test_update_keeps_runtime_only_mode(self):
+    def test_update_keeps_the_install_mode(self):
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as z:
             z.writestr("release/install.py", "# isolated installer fixture\n")
-        update_root = self.root / "update"
-        update_root.mkdir()
-        with patch.object(notify, "installed", return_value={"version": "1.0.0", "mode": "runtime-only"}), \
-                patch.object(notify, "github", side_effect=[b'{"tag_name":"v1.2.1"}', archive.getvalue()]), \
-                patch.object(notify.tempfile, "TemporaryDirectory", return_value=contextlib.nullcontext(str(update_root))), \
-                patch.object(notify.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, \
-                contextlib.redirect_stdout(io.StringIO()):
-            notify.update()
-        self.assertEqual(run.call_args.args[0][-1], "--runtime-only")
+        for mode, last in (("runtime-only", "--runtime-only"), ("no-skill", "--no-skill"), ("full", None)):
+            update_root = self.root / ("update-" + mode)
+            update_root.mkdir()
+            with patch.object(notify, "installed", return_value={"version": "1.0.0", "mode": mode}), \
+                    patch.object(notify, "github", side_effect=[b'{"tag_name":"v1.2.1"}', archive.getvalue()]), \
+                    patch.object(notify.tempfile, "TemporaryDirectory", return_value=contextlib.nullcontext(str(update_root))), \
+                    patch.object(notify.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                notify.update()
+            args = run.call_args.args[0]
+            if last:
+                self.assertEqual(args[-1], last, mode)
+            else:
+                self.assertTrue(args[-1].endswith("install.py"), mode)
 
     def write_installed(self, version):
         (self.root / "installed.json").write_text(json.dumps({"version": version, "mode": "full"}))

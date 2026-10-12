@@ -6,7 +6,8 @@ Source of truth: the AI-Work-Notify package (notify.py there); install.py copies
 Hook events (event JSON on stdin; print nothing, always exit 0, log to log.txt):
     notify.py <claude|codex|agy> start    remember when the user's request started
     notify.py <claude|codex|agy> stop     queue a message for the finished answer
-    notify.py claude permission           queue "waiting for approval"
+    notify.py <claude|codex> permission   queue "waiting for approval" (Claude: also its questions)
+    notify.py codex ask                   queue "waiting for an answer" (Codex's question tools)
 Internal:
     notify.py wait <pending> <token>      background waiter, then the daily new-release check
     notify.py serve                       page behind the notification's button
@@ -495,27 +496,36 @@ FINISHED = {"completed", "failed", "killed", "stopped", "cancelled"}
 # Codex's desktop app runs requests of its own, such as suggesting the user's next message, in a
 # throwaway copy of the thread (thread/fork, never saved); their hooks fire like a user's turn.
 CODEX_APP_REQUEST = "This is an app-generated request"
+# The answer to a Codex question card comes back as a prompt in this tag, sent into the running
+# turn or starting one; it goes on with the user's request (empty when the app answers itself).
+CODEX_QUESTION_REPLY = "<send_user_message_question_reply>"
 
 
 def codex_saved(session):
     """True when Codex keeps the thread (a rollout file under sessions/); its own throwaway
     threads have none, and their codex://threads/<id> link fails with "no rollout found"."""
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    return any(next(home.glob(f"{where}/**/rollout-*{session}.jsonl"), None)
+    # A thread can also go on in a file named rollout-<time>-<thread id>_<another id>.jsonl.
+    return any(next(home.glob(f"{where}/**/rollout-*{session}*.jsonl"), None)
                for where in ("sessions", "archived_sessions"))
 
 
 def start(tool, ev):
     key = session_key(tool, ev)
     path = STATE / f"{key}.json"
-    if tool == "codex" and (ev.get("prompt") or "").lstrip().startswith(CODEX_APP_REQUEST):
+    prompt = (ev.get("prompt") or "").lstrip()
+    if tool == "codex" and prompt.startswith(CODEX_APP_REQUEST):
         return  # not the user's request; without a start its stop sends nothing
     woke = tool == "claude" and CLAUDE_WAKEUP.match(ev.get("prompt") or "")
     if path.exists() and (tool not in PER_PROMPT or woke):
         return
-    path.write_text(json.dumps({"ts": time.time(), "prompt": short(ev.get("prompt"), 60),
+    for pending in (f"pending-{key}.json", f"pending-ask-{key}.json"):
+        (STATE / pending).unlink(missing_ok=True)  # the user answered
+    replied = tool == "codex" and prompt.startswith(CODEX_QUESTION_REPLY)
+    if replied and path.exists():
+        return  # keeps the request's own prompt and start time
+    path.write_text(json.dumps({"ts": time.time(), "prompt": "(질문에 답함)" if replied else short(ev.get("prompt"), 60),
                                 "folder": folder(ev)}, ensure_ascii=False), encoding="utf-8")
-    (STATE / f"pending-{key}.json").unlink(missing_ok=True)  # the user answered
 
 
 def stop(tool, ev, cfg):
@@ -543,6 +553,59 @@ def stop(tool, ev, cfg):
                       "session": conversation(tool, ev)})
 
 
+def tool_args(ev):
+    """The hook event's tool_input as a dict (it may come as a JSON string)."""
+    args = ev.get("tool_input") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {}
+    return args if isinstance(args, dict) else {}
+
+
+def approval_detail(ev):
+    """What Codex asks to be allowed, for its approval notification."""
+    args, name = tool_args(ev), ev.get("tool_name") or ""
+    if name == "Bash":
+        command = args.get("command") or ""
+        return args.get("description") or short(" ".join(command) if isinstance(command, list) else command, 80)
+    return {"apply_patch": "파일 수정", "write_stdin": "실행 중인 명령에 입력",
+            "request_permissions": "권한 요청"}.get(name, name)
+
+
+def waiting(tool, event, ev):
+    """The agent waits for the user: a question or an approval. Claude Code reports both as a
+    permission prompt (its question tool, AskUserQuestion, included); Codex runs PreToolUse on its
+    question tools ("ask") and PermissionRequest before an approval prompt ("permission")."""
+    msg = {"tool": tool, "folder": folder(ev), "session": conversation(tool, ev), "since": time.time()}
+    if tool == "claude":
+        if ev.get("notification_type", "permission_prompt") != "permission_prompt":
+            return
+        if "AskUserQuestion" in (ev.get("message") or ""):
+            msg.update(kind="ask", questions_from=ev.get("transcript_path"))  # read when sending
+        else:
+            msg.update(kind="permission", detail=ev.get("message"))
+    elif event == "ask":
+        # request_user_input_async does not pause the turn, and the app answers it with nothing
+        # when the user stays away; request_user_input (Plan mode) waits.
+        msg.update(kind="ask", questions=tool_args(ev).get("questions") or [],
+                   moves_on=ev.get("tool_name") == "request_user_input_async")
+    else:
+        msg.update(kind="permission", detail=approval_detail(ev), rollout=ev.get("transcript_path"))
+    queue(tool, "ask-" + session_key(tool, ev), msg)  # beside, not instead of, the answer's message
+
+
+def decided(m):
+    """Codex runs PermissionRequest also when the approval is then given without the user (an
+    earlier "for this session" approval, or its auto-review); the agent then goes on writing its
+    rollout, which an approval prompt waiting for the user keeps still."""
+    try:
+        return Path(m["rollout"]).stat().st_mtime > m["since"] + 3
+    except OSError:
+        return False
+
+
 def agy_transcript(path):
     """Last user request and the answer to it, from an Antigravity transcript."""
     prompt = answer = ""
@@ -556,9 +619,67 @@ def agy_transcript(path):
     return prompt, answer
 
 
+def tail_lines(path, size=262_144):
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        f.seek(max(0, f.tell() - size))
+        return f.read().decode("utf-8", "replace").splitlines()
+
+
+def claude_questions(path):
+    """The questions of the last AskUserQuestion call in a Claude Code transcript."""
+    for line in reversed(tail_lines(path)):
+        if '"AskUserQuestion"' not in line:
+            continue
+        try:
+            content = (json.loads(line).get("message") or {}).get("content") or []
+        except ValueError:  # the first line read may be cut
+            continue
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name") == "AskUserQuestion":
+                return (c.get("input") or {}).get("questions") or []
+    return []
+
+
+def question_lines(questions):
+    """The first question and its options. Claude: question, options[].label; Codex: question
+    or title, options as labels or plain strings."""
+    if not questions or not isinstance(questions[0], dict):
+        return []
+    q = questions[0]
+    more = f" (외 {len(questions) - 1}개)" if len(questions) > 1 else ""
+    text = q.get("question") or q.get("title") or q.get("header") or ""
+    options = [o.get("label") if isinstance(o, dict) else o for o in q.get("options") or []]
+    lines = [f"💬 {short(plain(text), 120)}{more}"] if text else []
+    if any(options):
+        lines.append("↳ " + short(" · ".join(str(o) for o in options if o), 120))
+    return lines
+
+
+def waiting_text(m):
+    ask = m["kind"] == "ask"
+    lines = [f"{'❓' if ask else '⏸'} {label(m['tool'], m.get('host', ''))} {'질문' if ask else '승인'} 기다림"]
+    if m.get("folder"):
+        lines.append(f"📁 {m['folder']}")
+    questions = m.get("questions")
+    if ask and questions is None and m.get("questions_from"):
+        try:
+            questions = claude_questions(m["questions_from"])
+        except OSError:
+            questions = []
+    lines += question_lines(questions or [])
+    if m.get("detail"):
+        lines.append(f"💬 {short(m['detail'], 120)}")
+    if m.get("moves_on"):
+        lines.append("⏳ 답하지 않으면 잠시 뒤 답 없이 진행합니다")
+    return "\n".join(lines)
+
+
 def message(m):
     """Built at send time: Antigravity's hook events carry no prompt or answer, so they are
     read from its transcript once the answer has surely been written."""
+    if m.get("kind"):
+        return waiting_text(m)
     if "text" in m:
         return m["text"]
     if m.get("transcript"):
@@ -628,6 +749,9 @@ def wait(name, token, cfg):
     m = p["msg"]
     if m.get("tool") == "codex" and m.get("session") and not codex_saved(m["session"]):
         log(f"SKIP codex {m['session']} is not a saved conversation (a request of Codex's own)")
+        return
+    if m.get("kind") == "permission" and m.get("rollout") and decided(m):
+        log(f"SKIP {m['tool']} approval was decided without the user")
         return
     send(config(), message(m), m.get("tool"), m.get("session", ""), m.get("folder", ""), m.get("host", ""))
 
@@ -790,7 +914,7 @@ def release_notice():
 
 def update():
     """Install the latest GitHub release over this one when it is newer, the same way as
-    before (full, or runtime-only on the PC that keeps the source)."""
+    before (full; no-skill or runtime-only on the PC that keeps the source)."""
     have = installed()
     try:
         tag = json.loads(github(f"https://api.github.com/repos/{REPO}/releases/latest"))["tag_name"]
@@ -813,7 +937,8 @@ def update():
         installer = next((root / "pkg").glob("*/install.py"), None)
         if not installer:
             raise Fail("받은 판에서 install.py를 찾지 못했습니다.")
-        args = [sys.executable, str(installer)] + (["--runtime-only"] if have.get("mode") == "runtime-only" else [])
+        flag = {"runtime-only": "--runtime-only", "no-skill": "--no-skill"}.get(have.get("mode"))
+        args = [sys.executable, str(installer)] + ([flag] if flag else [])
         if subprocess.run(args).returncode != 0:
             raise Fail("설치 도구가 실패했습니다. 위 출력을 확인하세요.")
 
@@ -825,8 +950,8 @@ def status():
     note = (f" · {new}" if new else
             f" · 최신 ({time.strftime('%m-%d', time.localtime(known.get('checked', 0)))} 확인)"
             if known.get("tag") and have.get("version") else "")
-    print(f"[판] {have.get('version', '알 수 없음')} "
-          f"({'알림 장치만' if have.get('mode') == 'runtime-only' else '전체 설치'}){note}")
+    kind = {"runtime-only": "알림 장치만", "no-skill": "스킬 없이"}.get(have.get("mode"), "전체 설치")
+    print(f"[판] {have.get('version', '알 수 없음')} ({kind}){note}")
     print("[보내는 곳]")
     if cfg["webhook_url"]:
         print(f"  웹훅 {masked(cfg['webhook_url'])}")
@@ -922,9 +1047,8 @@ def main():
         ensure_server()  # so buttons of earlier notifications work again after a reboot
     elif event == "stop":
         stop(tool, ev, cfg)
-    elif event == "permission" and ev.get("notification_type", "permission_prompt") == "permission_prompt":
-        queue(tool, session_key(tool, ev), {"tool": tool, "text": f"⏸ {NAMES[tool]} 승인 기다림\n{short(ev.get('message'), 120)}",
-                                            "folder": folder(ev), "session": conversation(tool, ev)})
+    elif event in ("ask", "permission"):
+        waiting(tool, event, ev)
 
 
 if __name__ == "__main__":
