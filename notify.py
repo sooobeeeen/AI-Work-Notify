@@ -543,6 +543,9 @@ def stop(tool, ev, cfg):
         return
     if tool not in PER_PROMPT:
         path.unlink()
+    if open_question(key):
+        log(f"SKIP {tool} answer: its open question is notified instead")
+        return
     elapsed = time.time() - st["ts"]
     error = ev.get("error")
     if elapsed < cfg["min_seconds"] and not error:
@@ -594,6 +597,22 @@ def waiting(tool, event, ev):
     else:
         msg.update(kind="permission", detail=approval_detail(ev), rollout=ev.get("transcript_path"))
     queue(tool, "ask-" + session_key(tool, ev), msg)  # beside, not instead of, the answer's message
+
+
+def open_question(key):
+    """At the end of a turn: True while a question card the agent left open (Codex's
+    request_user_input_async) waits to be notified, so that one message tells both. Any other
+    waiting notification is over once the turn has ended (the question answered, the approval
+    given), so it is dropped."""
+    path = STATE / f"pending-ask-{key}.json"
+    try:
+        msg = json.loads(path.read_text(encoding="utf-8"))["msg"]
+    except (OSError, ValueError, KeyError):
+        return False
+    if msg.get("moves_on"):
+        return True
+    path.unlink(missing_ok=True)
+    return False
 
 
 def decided(m):

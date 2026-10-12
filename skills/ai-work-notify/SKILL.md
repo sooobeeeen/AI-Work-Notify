@@ -49,6 +49,7 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 | --- | --- |
 | `SENT` | 보냈다. 못 받았으면 웹훅을 연결한 방과 카카오워크 알림 설정을 확인하게 한다. |
 | `READ` | 앱 창을 보고 있어서 보내지 않았다. 정상이다. `READ ask-…`는 질문·승인 알림이다. |
+| `SKIP codex answer: its open question is notified instead` | Codex가 질문 카드를 띄우고 곧바로 답변을 끝냈다. 알림이 두 번 가지 않게 "답변 도착"은 빼고 질문 알림 하나만 보낸다(1.4.1). 정상이다. |
 | `SKIP codex approval was decided without the user` | Codex가 승인을 물었지만 사용자 없이 정해졌다(이번 대화에서 "계속 허용"한 명령, 자동 검토). 에이전트가 이미 작업을 이어 가서 보내지 않았다. 정상이다. |
 | `SENT 🆕 AI 작업 알림 새 판 …` | 새 판 알림을 보냈다. 판마다 한 번만 보낸다. |
 | `RELEASE check failed …` | GitHub에서 최신 판을 확인하지 못했다(인터넷 연결이나 회사 방화벽). 다음 날 다시 확인한다. 답변 알림과는 상관없다. |

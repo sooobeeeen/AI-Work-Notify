@@ -219,6 +219,25 @@ class NotifyTests(unittest.TestCase):
             f"⏸ Codex 승인 기다림\n{where}\n💬 파일 수정"])
         self.assertEqual({q[1] for q in queued}, {"ask-" + notify.session_key("codex", self.event)})
 
+    def test_turn_ending_with_a_question_card_open_sends_one_message(self):
+        notify.start("codex", self.event)
+        ask = self.state / ("pending-ask-" + notify.session_key("codex", self.event) + ".json")
+        cfg = {**notify.config(), "min_seconds": 0}
+        queued, logged = [], []
+        with patch.object(notify, "queue", side_effect=lambda *a: queued.append(a)), \
+                patch.object(notify, "log", side_effect=logged.append):
+            ask.write_text(json.dumps({"token": "t", "app": 1, "msg": {"tool": "codex", "kind": "ask", "moves_on": True}}))
+            notify.stop("codex", self.event, cfg)
+            self.assertEqual(queued, [])
+            self.assertTrue(ask.exists())  # its own waiter still tells the user
+            self.assertEqual(logged, ["SKIP codex answer: its open question is notified instead"])
+            # a question the turn waited for (Plan mode) or an approval was settled before the end
+            for msg in ({"tool": "codex", "kind": "ask", "moves_on": False}, {"tool": "codex", "kind": "permission"}):
+                ask.write_text(json.dumps({"token": "t", "app": 1, "msg": msg}))
+                notify.stop("codex", self.event, cfg)
+                self.assertFalse(ask.exists())
+        self.assertEqual(len(queued), 2)
+
     def test_codex_approval_given_without_the_user_is_not_sent(self):
         rollout = self.root / "rollout.jsonl"
         rollout.write_text("{}\n")
