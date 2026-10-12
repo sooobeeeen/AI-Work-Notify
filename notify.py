@@ -488,11 +488,24 @@ PER_PROMPT = {"claude", "codex"}
 CLAUDE_WAKEUP = re.compile(r"\s*(?:Another Claude session sent a message:\s*)?"
                            r"<(?:task-notification|agent-message|ci-monitor-event)\b")
 FINISHED = {"completed", "failed", "killed", "stopped", "cancelled"}
+# Codex's desktop app runs requests of its own, such as suggesting the user's next message, in a
+# throwaway copy of the thread (thread/fork, never saved); their hooks fire like a user's turn.
+CODEX_APP_REQUEST = "This is an app-generated request"
+
+
+def codex_saved(session):
+    """True when Codex keeps the thread (a rollout file under sessions/); its own throwaway
+    threads have none, and their codex://threads/<id> link fails with "no rollout found"."""
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    return any(next(home.glob(f"{where}/**/rollout-*{session}.jsonl"), None)
+               for where in ("sessions", "archived_sessions"))
 
 
 def start(tool, ev):
     key = session_key(tool, ev)
     path = STATE / f"{key}.json"
+    if tool == "codex" and (ev.get("prompt") or "").lstrip().startswith(CODEX_APP_REQUEST):
+        return  # not the user's request; without a start its stop sends nothing
     woke = tool == "claude" and CLAUDE_WAKEUP.match(ev.get("prompt") or "")
     if path.exists() and (tool not in PER_PROMPT or woke):
         return
@@ -609,6 +622,9 @@ def wait(name, token, cfg):
         time.sleep(2)
     path.unlink(missing_ok=True)
     m = p["msg"]
+    if m.get("tool") == "codex" and m.get("session") and not codex_saved(m["session"]):
+        log(f"SKIP codex {m['session']} is not a saved conversation (a request of Codex's own)")
+        return
     send(config(), message(m), m.get("tool"), m.get("session", ""), m.get("folder", ""), m.get("host", ""))
 
 

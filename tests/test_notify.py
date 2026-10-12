@@ -112,6 +112,39 @@ class NotifyTests(unittest.TestCase):
             self.assertEqual(len(queued), 2)
         self.assertEqual(queued[0][2]["prompt"], "first request")
 
+    def test_codex_app_generated_request_is_not_tracked(self):
+        event = {**self.event, "prompt": "This is an app-generated request for a suggested next user "
+                                         "message. The user did not write this message."}
+        notify.start("codex", event)
+        self.assertFalse((self.state / (notify.session_key("codex", event) + ".json")).exists())
+        with patch.object(notify, "queue", side_effect=AssertionError("No notification allowed")):
+            notify.stop("codex", event, {**notify.config(), "min_seconds": 0})
+
+    def test_codex_thread_without_rollout_is_not_sent(self):
+        codex_home = self.root / "codex-home"
+        session = "01a12da6-2542-7703-a95e-c7e3774e627e"
+        pending = self.pending_for("codex")
+        sent, logged = [], []
+
+        def run():
+            pending.write_text(json.dumps({"token": "t", "app": 123, "msg": {
+                "tool": "codex", "elapsed": 9, "prompt": "q", "answer": "a", "session": session}}))
+            with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}), \
+                    patch.object(notify.time, "time", side_effect=[0, 31]), \
+                    patch.object(notify, "user_is_watching", return_value=False), \
+                    patch.object(notify, "send", side_effect=lambda *a: sent.append(a)), \
+                    patch.object(notify, "log", side_effect=logged.append):
+                notify.wait(pending.name, "t", notify.config())
+
+        run()
+        self.assertEqual(sent, [])
+        self.assertIn("is not a saved conversation", logged[-1])
+        rollout = codex_home / "sessions" / "2026" / "10" / "12" / f"rollout-2026-10-12T10-03-49-{session}.jsonl"
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text("{}\n")
+        run()
+        self.assertEqual(len(sent), 1)
+
     def run_wait(self, change):
         pending = self.pending_for("codex")
         pending.write_text(json.dumps({"token": "t", "app": 123,
