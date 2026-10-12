@@ -239,26 +239,55 @@ class NotifyTests(unittest.TestCase):
         self.assertEqual(len(queued), 2)
 
     def test_codex_approval_given_without_the_user_is_not_sent(self):
-        rollout = self.root / "rollout.jsonl"
-        rollout.write_text("{}\n")
+        codex_home = self.root / "codex-home"
+        rollout = codex_home / "sessions" / f"rollout-2026-10-12T17-04-17-{self.event['session_id']}.jsonl"
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text('{"approvals_reviewer":"user"}\n')
+        env = patch.dict(os.environ, {"CODEX_HOME": str(codex_home)})
+        env.start()
+        self.addCleanup(env.stop)
         pending = self.state / "pending-ask-codex-x.json"
         sent, logged = [], []
 
-        def run(since):
-            pending.write_text(json.dumps({"token": "t", "app": 123, "msg": {
-                "tool": "codex", "kind": "permission", "detail": "명령", "rollout": str(rollout), "since": since}}))
+        def run():
+            with patch.object(notify, "queue", side_effect=lambda tool, key, msg: pending.write_text(
+                    json.dumps({"token": "t", "app": 123, "msg": msg}))):
+                notify.waiting("codex", "permission", {**self.event, "tool_name": "Bash", "transcript_path": str(rollout),
+                                                       "tool_input": {"command": "rm x"}})
+            return pending
+
+        def finish():
             with patch.object(notify.time, "time", side_effect=[0, 31]), \
                     patch.object(notify, "user_is_watching", return_value=False), \
                     patch.object(notify, "send", side_effect=lambda *a: sent.append(a)), \
                     patch.object(notify, "log", side_effect=logged.append):
                 notify.wait(pending.name, "t", notify.config())
 
-        written = rollout.stat().st_mtime
-        run(since=written - 60)  # the agent went on after the request: approved without the user
+        run()
+        with rollout.open("a") as f:  # the agent went on after the request: approved without the user
+            f.write('{"type":"event_msg"}\n')
+        finish()
         self.assertEqual(sent, [])
         self.assertEqual(logged, ["SKIP codex approval was decided without the user"])
-        run(since=written)  # nothing since: the prompt still waits
+        run()
+        finish()  # nothing written since: the prompt still waits for the user
         self.assertEqual(len(sent), 1)
+
+    def test_codex_approval_in_auto_review_is_not_notified(self):
+        codex_home = self.root / "codex-home"
+        session = self.event["session_id"]
+        rollout = codex_home / "sessions" / "2026" / "10" / "12" / f"rollout-2026-10-12T17-04-17-{session}.jsonl"
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text('{"payload":{"approvals_reviewer":"user"}}\n{"payload":{"thread_settings":'
+                           '{"approvals_reviewer":"auto_review"}}}\n{"type":"response_item"}\n', encoding="utf-8")
+        logged = []
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}), \
+                patch.object(notify, "queue", side_effect=AssertionError("No notification allowed")), \
+                patch.object(notify, "log", side_effect=logged.append):
+            # no transcript_path in the event: the rollout is found by the thread id
+            notify.waiting("codex", "permission", {**self.event, "tool_name": "Bash", "tool_input": {"command": "x"}})
+        self.assertEqual(logged, ["SKIP codex approval goes to Codex's auto-review (나 대신 승인)"])
+        self.assertEqual(notify.approvals_reviewer(self.root / "missing.jsonl"), "")
 
     def run_wait(self, change):
         pending = self.pending_for("codex")

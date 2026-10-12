@@ -501,13 +501,33 @@ CODEX_APP_REQUEST = "This is an app-generated request"
 CODEX_QUESTION_REPLY = "<send_user_message_question_reply>"
 
 
+def codex_rollout(session):
+    """The thread's newest rollout file, or None. A thread can also go on in a file named
+    rollout-<time>-<thread id>_<another id>.jsonl; the time in the name orders them."""
+    if not session:
+        return None
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    found = [p for where in ("sessions", "archived_sessions") for p in home.glob(f"{where}/**/rollout-*{session}*.jsonl")]
+    return max(found, key=lambda p: p.name) if found else None
+
+
 def codex_saved(session):
     """True when Codex keeps the thread (a rollout file under sessions/); its own throwaway
     threads have none, and their codex://threads/<id> link fails with "no rollout found"."""
-    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    # A thread can also go on in a file named rollout-<time>-<thread id>_<another id>.jsonl.
-    return any(next(home.glob(f"{where}/**/rollout-*{session}*.jsonl"), None)
-               for where in ("sessions", "archived_sessions"))
+    return codex_rollout(session) is not None
+
+
+def approvals_reviewer(rollout):
+    """Who answers the thread's approval prompts, from the last setting in its rollout: "user",
+    or "auto_review" (the app's "나 대신 승인": Codex's own reviewer allows or denies, and never
+    asks the user), or "" when unknown."""
+    try:
+        data = Path(rollout).read_bytes()
+    except OSError:
+        return ""
+    at = data.rfind(b'"approvals_reviewer"')
+    m = re.match(rb'"approvals_reviewer"\s*:\s*"([^"]*)"', data[at:at + 80]) if at >= 0 else None
+    return m.group(1).decode("ascii", "replace") if m else ""
 
 
 def start(tool, ev):
@@ -581,7 +601,7 @@ def waiting(tool, event, ev):
     """The agent waits for the user: a question or an approval. Claude Code reports both as a
     permission prompt (its question tool, AskUserQuestion, included); Codex runs PreToolUse on its
     question tools ("ask") and PermissionRequest before an approval prompt ("permission")."""
-    msg = {"tool": tool, "folder": folder(ev), "session": conversation(tool, ev), "since": time.time()}
+    msg = {"tool": tool, "folder": folder(ev), "session": conversation(tool, ev)}
     if tool == "claude":
         if ev.get("notification_type", "permission_prompt") != "permission_prompt":
             return
@@ -595,7 +615,15 @@ def waiting(tool, event, ev):
         msg.update(kind="ask", questions=tool_args(ev).get("questions") or [],
                    moves_on=ev.get("tool_name") == "request_user_input_async")
     else:
-        msg.update(kind="permission", detail=approval_detail(ev), rollout=ev.get("transcript_path"))
+        rollout = ev.get("transcript_path") or codex_rollout(msg["session"])
+        if rollout and approvals_reviewer(rollout) == "auto_review":
+            log("SKIP codex approval goes to Codex's auto-review (나 대신 승인)")
+            return
+        try:
+            size = os.path.getsize(rollout) if rollout else None
+        except OSError:
+            size = None
+        msg.update(kind="permission", detail=approval_detail(ev), rollout=str(rollout or ""), rollout_size=size)
     queue(tool, "ask-" + session_key(tool, ev), msg)  # beside, not instead of, the answer's message
 
 
@@ -617,10 +645,13 @@ def open_question(key):
 
 def decided(m):
     """Codex runs PermissionRequest also when the approval is then given without the user (an
-    earlier "for this session" approval, or its auto-review); the agent then goes on writing its
-    rollout, which an approval prompt waiting for the user keeps still."""
+    earlier "for this session" approval); the agent then goes on writing its rollout, which an
+    approval prompt waiting for the user keeps still. Judged by size: Windows reports the
+    modified time of Codex's open rollout minutes late (seen 2026-10-12)."""
+    if m.get("rollout_size") is None:
+        return False
     try:
-        return Path(m["rollout"]).stat().st_mtime > m["since"] + 3
+        return os.path.getsize(m["rollout"]) > m["rollout_size"]
     except OSError:
         return False
 
@@ -769,7 +800,7 @@ def wait(name, token, cfg):
     if m.get("tool") == "codex" and m.get("session") and not codex_saved(m["session"]):
         log(f"SKIP codex {m['session']} is not a saved conversation (a request of Codex's own)")
         return
-    if m.get("kind") == "permission" and m.get("rollout") and decided(m):
+    if m.get("kind") == "permission" and decided(m):
         log(f"SKIP {m['tool']} approval was decided without the user")
         return
     send(config(), message(m), m.get("tool"), m.get("session", ""), m.get("folder", ""), m.get("host", ""))
