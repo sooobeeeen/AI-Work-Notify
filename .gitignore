@@ -4,5 +4,6 @@ __pycache__/
 config.json
 contacts.json
 log.txt
+release.json
 state/
 *.before-ai-work-notify

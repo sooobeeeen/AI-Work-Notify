@@ -5,7 +5,7 @@ description: 카카오워크 'AI 작업 알림'을 관리한다. Claude Code·Co
 
 # 스킬: AI 작업 알림 관리
 
-알림 장치는 `%USERPROFILE%\.kakaowork-notify\notify.py`에 설치되어 있다. Claude Code·Codex·Antigravity의 훅이 이 파일을 부른다. 답변이 끝나고 `unread_seconds`초 안에 사용자가 그 앱 창을 보지 않으면, 카카오워크 웹훅으로 1:1 방에 알림을 보낸다. 알림에는 그 앱으로 넘어가는 단추가 붙는다. Claude Code와 Codex의 단추는 질문한 그 대화를 열고(`claude://code/continue?session=…`, `codex://threads/…`), VS Code(Claude Code·Codex 확장)와 Antigravity는 대화를 여는 링크가 없어 그 작업 폴더 이름이 제목에 있는 창을 고른다. 창을 X로 닫아 트레이에 숨어 있어도 다시 띄운다(VS Code는 X로 닫으면 종료되므로 "no window").
+알림 장치는 `%USERPROFILE%\.kakaowork-notify\notify.py`에 설치되어 있다. Claude Code·Codex·Antigravity의 훅이 이 파일을 부른다. 답변이 끝나고 `unread_seconds`초 안에 사용자가 그 앱 창을 보지 않으면, 카카오워크 웹훅으로 1:1 방에 알림을 보낸다. 알림에는 그 앱으로 넘어가는 단추가 붙는다. Claude Code와 Codex의 단추는 질문한 그 대화를 열고(`claude://code/continue?session=…`, `codex://threads/…`), VS Code(Claude Code·Codex 확장)와 Antigravity는 대화를 여는 링크가 없어 그 작업 폴더 이름이 제목에 있는 창을 고른다. 창을 X로 닫아 트레이에 숨어 있어도 다시 띄운다(VS Code는 X로 닫으면 종료되므로 "no window"). 1.3.0부터는 답변 알림을 처리한 뒤 하루에 한 번 GitHub에서 최신 판을 확인해, 새 판이 나오면 1:1 방으로 판마다 한 번 알린다.
 
 Codex(PowerShell)에서는 아래처럼 실행한다. `status`는 읽기만 하므로 먼저 기본 권한으로 실행한다. 설정 변경·업데이트·시험 발송처럼 사용자 폴더 쓰기나 네트워크가 필요한 명령은 샌드박스가 막으면 실행 승인을 요청한다.
 
@@ -22,6 +22,7 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 - 이 알림은 웹훅만 쓴다. 카카오워크 봇 키(App Key)를 넣지 않는다.
 - 훅 명령과 설치 경로를 바꾸지 않는다. **훅 설정에 저장하는 명령**에는 따옴표를 넣지 않는다(Antigravity가 따옴표를 글자 그대로 넘긴다). PowerShell·Bash에서 직접 실행할 때는 경로를 그 셸 문법에 맞게 감싼다. Codex는 훅이 바뀌면 `/hooks`에서 다시 승인해야 한다.
 - 알림 장치를 고치거나 새 판으로 바꿀 때는 AI-Work-Notify 폴더에서 `py -3.13 install.py`를 다시 실행한다. 설치된 `notify.py`를 직접 고치지 않는다.
+- 명령 결과에 `새 판 vX.Y.Z 있음`이 나오면(`status`의 [판] 줄, `set`·`webhook`·`test`·`server`의 마지막 줄), 요청받은 일을 마친 뒤 사용자에게 판 번호와 바뀐 점을 알리고 지금 업데이트할지 묻는다. 사용자가 원할 때만 `update`를 실행한다.
 
 ## 사용자 요청과 명령
 
@@ -34,7 +35,7 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 | 웹훅 주소 넣어 줘 / 바꿔 줘 | 사용자가 주소를 복사했는지 확인한 뒤 `webhook`. 클립보드를 못 읽으면 메모장 파일에 저장하게 하고 `webhook <파일>`, 그 파일은 지우게 한다 |
 | 알림 시험해 줘 | `test`. 1:1 방에 왔는지 사용자에게 확인받는다 |
 | 업데이트해 줘 | `update`. GitHub(sooobeeeen/AI-Work-Notify) 최신 릴리즈가 더 새로울 때만 받아 설치한다. 설정·웹훅 주소·훅은 그대로다. `update`가 없다고 나오면(1.2.0 전 판) 저장소 주소로 처음 설치하듯 다시 설치한다 |
-| 새 판 있어? | `status`의 설치된 판과 GitHub 최신 릴리즈(`https://api.github.com/repos/sooobeeeen/AI-Work-Notify/releases/latest`의 `tag_name`)를 비교해 알린다. 판 확인 요청만으로 `update`를 실행하지 않는다 |
+| 새 판 있어? | `status`의 [판] 줄을 본다(알림 장치가 하루 한 번 확인한 결과와 확인 날짜). 방금 나온 판까지 보려면 설치된 판과 GitHub 최신 릴리즈(`https://api.github.com/repos/sooobeeeen/AI-Work-Notify/releases/latest`의 `tag_name`)를 비교한다. 판 확인 요청만으로 `update`를 실행하지 않는다 |
 | 이동 단추가 안 돼 | `server`. 창은 뜨는데 다른 대화가 보이면: 1.1.0 전에 온 알림(단추에 대화 ID 없음)이거나, Codex에서 보관(archive)한 대화(Codex 앱이 열지 못함)다. 새 알림으로 다시 해 보게 한다. Antigravity는 원래 대화까지는 못 바꾼다 |
 | 상태 보여 줘 | `status` |
 
@@ -48,6 +49,8 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 | --- | --- |
 | `SENT` | 보냈다. 못 받았으면 웹훅을 연결한 방과 카카오워크 알림 설정을 확인하게 한다. |
 | `READ` | 앱 창을 보고 있어서 보내지 않았다. 정상이다. |
+| `SENT 🆕 AI 작업 알림 새 판 …` | 새 판 알림을 보냈다. 판마다 한 번만 보낸다. |
+| `RELEASE check failed …` | GitHub에서 최신 판을 확인하지 못했다(인터넷 연결이나 회사 방화벽). 다음 날 다시 확인한다. 답변 알림과는 상관없다. |
 | `SKIP codex … is not a saved conversation` | Codex 앱이 스스로 돌린 요청(다음 질문 추천 등, 저장되지 않는 임시 대화)이라 보내지 않았다. 정상이다. 사용자가 보낸 질문인데 이 줄이 나오면 그 대화가 `~/.codex/sessions`에 저장돼 있는지 확인한다. |
 | `WAIT claude N background task(s) still running` | Claude가 백그라운드 작업(서브에이전트·백그라운드 명령·모니터)을 기다리느라 턴을 멈췄을 뿐이라 알리지 않았다. 정상이다. 모두 끝난 뒤 Claude가 마무리하면 알림이 간다. 작업이 다 끝났는데도 이 줄만 이어지면 Claude 앱의 백그라운드 작업 목록을 확인하게 한다. |
 | `SKIP … not from a desktop app window` | 창이 있는 앱 밖에서 돌린 실행이라 건너뛰었다. 터미널에서 돌린 `claude`, `claude -p`, `codex exec`, `agy -p`, SDK 스크립트면 정상이다. 이 알림은 Claude·Codex 데스크톱 앱, VS Code의 Claude Code·Codex 확장, Antigravity(2.0 앱·IDE)에서만 동작한다고 사용자에게 알린다. |

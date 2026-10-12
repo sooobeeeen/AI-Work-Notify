@@ -262,6 +262,89 @@ class NotifyTests(unittest.TestCase):
             notify.update()
         self.assertEqual(run.call_args.args[0][-1], "--runtime-only")
 
+    def write_installed(self, version):
+        (self.root / "installed.json").write_text(json.dumps({"version": version, "mode": "full"}))
+
+    def latest(self, tag, body=""):
+        return patch.object(notify, "github", return_value=json.dumps({"tag_name": tag, "body": body}).encode())
+
+    def test_newer_release_is_announced_once(self):
+        self.write_installed("1.3.0")
+        body = "새 판이 나오면 알려 줍니다.\r\n\r\n## 바뀐 것\r\n- 자세한 내용"
+        later = notify.time.time() + 2 * 86400
+        sent = []
+        with self.latest("v1.3.1", body) as github, \
+                patch.object(notify, "send", side_effect=lambda cfg, text: sent.append(text)):
+            notify.release_notice()
+            notify.release_notice()  # already checked today
+            self.assertEqual(github.call_count, 1)
+            with patch.object(notify.time, "time", return_value=later):
+                notify.release_notice()  # checks again; this release was already announced
+            self.assertEqual(github.call_count, 2)
+        self.assertEqual(sent, ["🆕 AI 작업 알림 새 판 v1.3.1\n새 판이 나오면 알려 줍니다.\n"
+                                'Claude Code나 Codex에게 "AI 작업 알림 업데이트해줘"라고 하면 받을 수 있습니다.'])
+
+    def test_no_release_message_when_current_offline_or_disabled(self):
+        self.write_installed("1.3.0")
+        cache = self.root / "release.json"
+        logged = []
+        with patch.object(notify, "send", side_effect=AssertionError("No message allowed")), \
+                patch.object(notify, "log", side_effect=logged.append):
+            with self.latest("v1.3.0"):
+                notify.release_notice()
+            checked = json.loads(cache.read_text(encoding="utf-8"))["checked"]
+            with patch.object(notify, "github", side_effect=OSError("offline")) as github, \
+                    patch.object(notify.time, "time", return_value=checked + 2 * 86400):
+                notify.release_notice()
+                notify.release_notice()  # an unreachable GitHub is tried again the next day
+            self.assertEqual(github.call_count, 1)
+            self.assertEqual(logged, ["RELEASE check failed: OSError: offline"])
+            self.assertEqual(json.loads(cache.read_text(encoding="utf-8"))["checked"], checked)  # status's date
+            cache.unlink()
+            notify.save_config(enabled=False)
+            with self.latest("v1.3.1"):
+                notify.release_notice()
+        notify.save_config(enabled=True)
+        sent = []
+        with self.latest("v1.3.1"), patch.object(notify, "send", side_effect=lambda cfg, text: sent.append(text)), \
+                patch.object(notify.time, "time", return_value=notify.time.time() + 2 * 86400):
+            notify.release_notice()  # turned on again: the next check announces it
+        self.assertEqual(len(sent), 1)
+
+    def test_release_summary_is_the_first_line_that_is_not_a_heading(self):
+        self.assertEqual(notify.release_summary("## 고친 것\n- **Codex 알림을 고쳤습니다.** 자세히"),
+                         "Codex 알림을 고쳤습니다. 자세히")
+        self.assertEqual(notify.release_summary(None), "")
+
+    def test_management_commands_show_a_newer_release(self):
+        def run():
+            out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="\n")  # manage() needs reconfigure()
+            with patch.object(notify, "HOOK_FILES", {}), patch.object(notify, "server_running", return_value=False), \
+                    contextlib.redirect_stdout(out):
+                notify.status()
+                notify.manage(["set", "unread_seconds", "40"])
+            out.flush()
+            return out.buffer.getvalue().decode("utf-8")
+
+        self.write_installed("1.3.0")
+        (self.root / "release.json").write_text(json.dumps(
+            {"tag": "v1.3.1", "summary": "요약 한 줄", "checked": 0}, ensure_ascii=False), encoding="utf-8")
+        shown = run()
+        self.assertIn("[판] 1.3.0 (전체 설치) · 새 판 v1.3.1 있음: 요약 한 줄\n", shown)
+        self.assertIn('새 판 v1.3.1 있음: 요약 한 줄 ("AI 작업 알림 업데이트해줘"로 받습니다)\n', shown)
+        self.write_installed("1.3.1")
+        shown = run()
+        self.assertNotIn("새 판", shown)
+        self.assertIn("[판] 1.3.1 (전체 설치) · 최신 (", shown)
+
+    def test_waiter_checks_for_a_release_after_the_answer(self):
+        calls = []
+        with patch.object(notify, "wait", side_effect=lambda *a: calls.append("wait")), \
+                patch.object(notify, "release_notice", side_effect=lambda: calls.append("release")), \
+                patch.object(sys, "argv", ["notify.py", "wait", "pending-x.json", "t"]):
+            notify.main()
+        self.assertEqual(calls, ["wait", "release"])
+
 
 if __name__ == "__main__":
     unittest.main()

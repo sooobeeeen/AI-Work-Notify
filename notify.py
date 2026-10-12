@@ -8,7 +8,7 @@ Hook events (event JSON on stdin; print nothing, always exit 0, log to log.txt):
     notify.py <claude|codex|agy> stop     queue a message for the finished answer
     notify.py claude permission           queue "waiting for approval"
 Internal:
-    notify.py wait <pending> <token>      background waiter
+    notify.py wait <pending> <token>      background waiter, then the daily new-release check
     notify.py serve                       page behind the notification's button
     notify.py ping                        exit 0 (install.py checks the hook command runs)
 Management (prints results, exit 1 on failure):
@@ -29,6 +29,10 @@ then brings that VS Code window to the front. Runs with no window of their own
 
 Sending: config.json next to this file. webhook_url (a KakaoWork Incoming Webhook tied to one
 room) if set, otherwise app_key + email (a bot); with neither, messages only go to the log.
+
+New releases: at most once a day a waiter asks GitHub for the latest release (release.json keeps
+the answer), and each release newer than this install is announced once, with the release notes'
+first line that is not a heading as its summary. Management commands show it from release.json.
 """
 import ctypes
 import json
@@ -717,10 +721,71 @@ def version_key(text):
     return tuple(int(x) for x in re.findall(r"\d+", text)[:3])
 
 
-def github(url):
+def github(url, timeout=60):
     req = urllib.request.Request(url, headers={"User-Agent": "ai-work-notify"})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
+
+
+RELEASE_CHECK = 86400  # seconds between new-release checks
+
+
+def release_summary(body):
+    """The release notes' first line that is not a heading: by convention a one-line summary."""
+    line = next((l for l in (body or "").splitlines() if l.strip() and not l.lstrip().startswith("#")), "")
+    return short(plain(line), 200)
+
+
+def known_release():
+    """{"tag", "summary", "checked"} from the last successful new-release check (plus "tried"
+    after a failed one), or {}."""
+    try:
+        return json.loads((HOME / "release.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def newer_release():
+    """"새 판 vX.Y.Z 있음: <summary>" when the last check found a release newer than this
+    install, else "". Read from release.json, not GitHub: Codex's sandbox may block the network."""
+    known, have = known_release(), installed().get("version")
+    if not (known.get("tag") and have and version_key(known["tag"]) > version_key(have)):
+        return ""
+    return f"새 판 {known['tag']} 있음" + (f": {known['summary']}" if known.get("summary") else "")
+
+
+def release_notice():
+    """Run by the waiter after the answer's own notification: at most once a day, ask GitHub
+    for the latest release, and announce each release newer than this install once."""
+    path = HOME / "release.json"
+    known = known_release()
+    if time.time() - max(known.get("checked", 0), known.get("tried", 0)) < RELEASE_CHECK:
+        return
+    # Recorded first, so an unreachable GitHub is tried again tomorrow, not after every answer.
+    path.write_text(json.dumps({**known, "tried": time.time()}, ensure_ascii=False), encoding="utf-8")
+    try:
+        latest = json.loads(github(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=10))
+        known = {"tag": latest["tag_name"], "summary": release_summary(latest.get("body")), "checked": time.time()}
+    except (OSError, ValueError, KeyError) as e:
+        log(f"RELEASE check failed: {type(e).__name__}: {e}")
+        return
+    path.write_text(json.dumps(known, ensure_ascii=False), encoding="utf-8")
+    cfg = config()
+    if not cfg["enabled"] or not newer_release():  # when turned on again, the next check tells
+        return
+    STATE.mkdir(exist_ok=True)
+    mark = STATE / ("release-" + re.sub(r"[^\w.-]", "", known["tag"]) + ".sent")
+    try:  # once per release, also when waiters of several apps check at the same moment
+        os.close(os.open(mark, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return
+    lines = [f"🆕 AI 작업 알림 새 판 {known['tag']}", known["summary"],
+             'Claude Code나 Codex에게 "AI 작업 알림 업데이트해줘"라고 하면 받을 수 있습니다.']
+    try:
+        send(cfg, "\n".join(line for line in lines if line))
+    except Exception:
+        mark.unlink(missing_ok=True)  # tried again after the next check
+        raise
 
 
 def update():
@@ -756,7 +821,12 @@ def update():
 def status():
     cfg = config()
     have = installed()
-    print(f"[판] {have.get('version', '알 수 없음')} ({'알림 장치만' if have.get('mode') == 'runtime-only' else '전체 설치'})")
+    known, new = known_release(), newer_release()
+    note = (f" · {new}" if new else
+            f" · 최신 ({time.strftime('%m-%d', time.localtime(known.get('checked', 0)))} 확인)"
+            if known.get("tag") and have.get("version") else "")
+    print(f"[판] {have.get('version', '알 수 없음')} "
+          f"({'알림 장치만' if have.get('mode') == 'runtime-only' else '전체 설치'}){note}")
     print("[보내는 곳]")
     if cfg["webhook_url"]:
         print(f"  웹훅 {masked(cfg['webhook_url'])}")
@@ -816,6 +886,8 @@ def manage(args):
         else:
             raise Fail("사용법: notify.py status | set <설정> <값> | webhook [파일] | test | server | update"
                        " | focus <앱> [대화 ID]")
+        if cmd in ("set", "webhook", "test", "server") and (new := newer_release()):  # status: [판] line
+            print(f'{new} ("AI 작업 알림 업데이트해줘"로 받습니다)')
         return 0
     except Fail as e:
         print(f"실패: {e}")
@@ -829,6 +901,7 @@ def main():
         return
     if args[:1] == ["wait"]:
         wait(args[1], args[2], cfg)
+        release_notice()  # after the answer's notification, never in the hooks themselves
         return
     if args[:1] == ["serve"]:
         serve()
