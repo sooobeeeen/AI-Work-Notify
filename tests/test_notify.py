@@ -304,6 +304,107 @@ class NotifyTests(unittest.TestCase):
         self.assertFalse(pending.exists())
         return sent
 
+    def test_codex_turns_from_subagent_messages_wait_for_the_subagents(self):
+        codex_home = self.root / "codex-home"
+        session = self.event["session_id"]
+        day = codex_home / "sessions" / "2026" / "10" / "15"
+        day.mkdir(parents=True)
+        main = day / f"rollout-2026-10-15T10-00-00-{session}.jsonl"
+        sub = day / "rollout-2026-10-15T10-05-00-00000000-0000-0000-0000-0000000000aa.jsonl"
+
+        def started(turn, parent):
+            return json.dumps({"payload": {"type": "task_started", "turn_id": turn, "turn_attribution": {
+                "turn_id": turn, "turn_trigger": "composer", "parent_turn_id": parent}}}) + "\n"
+
+        filler = json.dumps({"payload": {"type": "response_item", "text": "x" * 1000}}) + "\n"
+        # a long turn writes far more after its start than the end of the file a tail would read
+        main.write_text(started("u1", None) + started("a1", "s1") + filler * 400, encoding="utf-8")
+        sub.write_text(json.dumps({"payload": {"source": {"subagent": {"thread_spawn": {
+            "parent_thread_id": session}}}}}) + "\n" + started("s1", "u1"), encoding="utf-8")
+        user_turn = {**self.event, "turn_id": "u1", "transcript_path": str(main)}
+        agent_turn = {**self.event, "turn_id": "a1", "transcript_path": str(main), "prompt": "subagent report"}
+        env = patch.dict(os.environ, {"CODEX_HOME": str(codex_home)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.assertFalse(notify.from_agent("codex", user_turn))
+        self.assertTrue(notify.from_agent("codex", agent_turn))
+
+        notify.start("codex", user_turn)
+        notify.start("codex", agent_turn)  # keeps the user's request
+        pending = self.pending_for("codex")
+        pending.write_text("{}")
+        notify.start("codex", {**user_turn, "turn_id": "u2"})  # its start not written yet: who sent it is unknown
+        self.assertTrue(pending.exists())
+        pending.unlink()
+        state = json.loads((self.state / (notify.session_key("codex", self.event) + ".json")).read_text(encoding="utf-8"))
+        self.assertEqual(state["prompt"], "first request")
+
+        pending = self.pending_for("codex")
+        cfg = {**notify.config(), "min_seconds": 0}
+        sent, logged = [], []
+        with patch.object(notify, "queue", side_effect=lambda tool, key, msg: pending.write_text(
+                json.dumps({"token": "t", "app": 123, "msg": msg}))):
+            notify.stop("codex", user_turn, cfg)  # the user's turn ends handing work to the subagent
+            user_msg = pending.read_text(encoding="utf-8")
+            notify.stop("codex", agent_turn, cfg)  # does not replace the user's waiting one
+            self.assertEqual(pending.read_text(encoding="utf-8"), user_msg)
+            pending.unlink()
+            notify.stop("codex", agent_turn, cfg)
+
+        def finish():
+            with patch.object(notify.time, "time", side_effect=[0, 31]), \
+                    patch.object(notify, "user_is_watching", return_value=False), \
+                    patch.object(notify, "send", side_effect=lambda *a: sent.append(a)), \
+                    patch.object(notify, "log", side_effect=logged.append):
+                notify.wait(pending.name, "t", notify.config())
+
+        msg = json.loads(pending.read_text(encoding="utf-8"))["msg"]
+        finish()  # the subagent is still in its turn
+        self.assertEqual((sent, logged), ([], ["SKIP codex answer while its subagents still work"]))
+        pending.write_text(user_msg)
+        logged.clear()
+        finish()  # the user's own turn too
+        self.assertEqual((sent, logged), ([], ["SKIP codex answer while its subagents still work"]))
+        with sub.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"payload": {"type": "task_complete", "turn_id": "s1"}}) + "\n")
+        pending.write_text(json.dumps({"token": "t", "app": 123, "msg": msg}))
+        finish()  # none works any more: the last report is the answer
+        self.assertEqual(len(sent), 1)
+
+    def test_aionui_button_opens_the_conversation(self):
+        url = notify.button("codex", "6dda2e14", host="aionui")["action"]["value"]
+        self.assertIn("host=aionui", url)
+        self.assertIn("session=6dda2e14", url)
+        self.assertNotIn("session=", notify.button("codex", "not-an-id!", host="aionui")["action"]["value"])
+        opened = []
+        with patch.object(notify.os, "startfile", side_effect=opened.append, create=True), \
+                patch.object(notify, "app_window", return_value=None), \
+                patch.object(notify, "reveal", return_value=None), \
+                patch.object(notify, "log"):
+            notify.focus("codex", session="6dda2e14", host="aionui")
+            notify.focus("codex", session="6dda2e14", host="vscode")
+        self.assertEqual(opened, ["aionui://navigate?route=/conversation/6dda2e14"])
+
+    def test_agents_run_by_aionui_point_to_its_window(self):
+        def chain(*names):  # this process, then its ancestors
+            pids = [os.getpid(), *range(9000, 9000 + len(names) - 1)]
+            return {pid: (pids[k + 1] if k + 1 < len(pids) else 1, name) for k, (pid, name) in enumerate(zip(pids, names))}
+
+        sdk = {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}
+        with patch.object(notify, "window_owners", return_value=set()):
+            claude = chain("python.exe", "bash.exe", "claude.exe", "aioncore.exe", "aionui.exe", "explorer.exe")
+            self.assertEqual(notify.find_app("claude", claude, sdk), (9003, "aionui"))
+            codex = chain("python.exe", "codex.exe", "aioncore.exe", "aionui.exe", "explorer.exe")
+            self.assertEqual(notify.find_app("codex", codex, {}), (9002, "aionui"))
+            nested = chain("python.exe", "bash.exe", "claude.exe", "py.exe", "bash.exe", "claude.exe",
+                           "aioncore.exe", "aionui.exe", "explorer.exe")
+            self.assertIsNone(notify.find_app("claude", nested, sdk))
+            agy = chain("python.exe", "cmd.exe", "agy.exe", "aioncore.exe", "aionui.exe", "explorer.exe")
+            self.assertEqual(notify.find_app("cli", agy, {}), (9003, "aionui"))
+            agy_p = chain("python.exe", "cmd.exe", "agy.exe", "bash.exe", "claude.exe", "aioncore.exe", "aionui.exe")
+            self.assertIsNone(notify.find_app("cli", agy_p, {}))
+        self.assertEqual(notify.button("cli", host="aionui")["text"], "AionUi로 이동")
+
     def test_disabling_notifications_stops_an_existing_waiter(self):
         sent = self.run_wait(lambda: notify.save_config(enabled=False))
         self.assertEqual(sent, [])

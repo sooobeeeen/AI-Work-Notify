@@ -24,8 +24,8 @@ Management (prints results, exit 1 on failure):
 A queued message is sent only if the user does not look at the desktop app within
 unread_seconds: "looked" means the app's window is in front and there was keyboard or
 mouse input in the last 30 seconds. A new request in the same session cancels it.
-Claude Code and Codex may also run inside VS Code (its extensions or terminal); the button
-then brings that VS Code window to the front. Runs with no window of their own
+Claude Code and Codex may also run inside VS Code (its extensions or terminal) or AionUi; the
+button then brings that VS Code or AionUi window to the front. Runs with no window of their own
 (claude -p, codex exec, agy -p from a terminal, SDK scripts) are skipped.
 
 Sending: config.json next to this file. webhook_url (a KakaoWork Incoming Webhook tied to one
@@ -64,16 +64,22 @@ APPS = {"claude": "claude.exe", "codex": "chatgpt.exe", "app": "antigravity.exe"
 AGENTS = {"claude": "claude.exe", "codex": "codex.exe"}
 # Editors that run the agent inside their own window instead (VS Code's Claude Code and Codex
 # extensions, or its terminal); the button then brings that editor window to the front.
-HOSTS = {"code.exe": "vscode"}
-HOST_NAMES = {"vscode": "VS Code"}
+HOSTS = {"code.exe": "vscode", "aionui.exe": "aionui"}
+HOST_NAMES = {"vscode": "VS Code", "aionui": "AionUi"}
+# AionUi runs Claude Code (as an SDK client), Codex (app-server) and AGY CLI (agy.exe) as direct
+# children of its aioncore.exe, itself a child of the AionUi.exe window (seen 2026-10-16).
+AIONUI_CHAIN = ["aioncore.exe", "aionui.exe"]
 HOST_EXES = {host: exe for exe, host in HOSTS.items()}
 # Links that open one conversation. Claude's desktop app gives its hooks the conversation's id
 # (CLAUDE_CODE_HOST_SESSION_ID); its taskbar jump list uses the same link. Codex's hook event
 # carries session_id, the thread id behind codex://threads/<id> (learn.chatgpt.com/docs/reference/commands).
 # Antigravity has no such link (docs, changelog and agy --help checked 2026-10-06), so its button
 # only prefers the window whose title names the workspace folder.
+# AionUi gives each agent its conversation's id (AIONUI_CONVERSATION_ID) and opens that
+# conversation from aionui://navigate?route=/conversation/<id> (its deep link, 2026-10-19).
 LINKS = {"claude": (re.compile(r"local_[A-Za-z0-9-]{1,64}"), "claude://code/continue?session={}"),
-         "codex": (re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"), "codex://threads/{}")}
+         "codex": (re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"), "codex://threads/{}"),
+         "aionui": (re.compile(r"[0-9a-f]{8}"), "aionui://navigate?route=/conversation/{}")}
 ACTIVE_INPUT_MS = 30_000
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -118,7 +124,7 @@ def send(cfg, text, tool=None, session="", folder="", host=""):
     else:
         log("DRY " + text.replace("\n", " | "))
         return
-    if tool in APPS:  # text stays as the push preview; blocks add the "go to the app" button
+    if tool in APPS or host:  # text stays as the push preview; blocks add the "go to the app" button
         payload["blocks"] = [{"type": "text", "text": text}, button(tool, session, folder, host)]
         ensure_server()
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST", headers=headers)
@@ -199,6 +205,10 @@ def find_app(tool, procs=None, env=os.environ):
             pass
         elif i + 1 < len(chain) and names[i + 1] == APPS[tool]:
             i += 1
+        elif names[i + 1:i + 3] == AIONUI_CHAIN:
+            # Its agent is an SDK client, so this comes before the SDK check; claude -p run
+            # by that agent has a shell, not aioncore.exe, above it and is still skipped.
+            i, host = i + 2, "aionui"
         else:
             # Inside an editor (VS Code's extensions, or its terminal with a shell between),
             # unless it is an SDK script. claude -p or codex exec from a plain terminal has
@@ -207,6 +217,11 @@ def find_app(tool, procs=None, env=os.environ):
             if j is None or env.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk"):
                 return None
             i, host = j, HOSTS[names[j]]
+    elif tool == "cli":  # AGY CLI has a window only when AionUi runs it
+        i = names.index("agy.exe") if "agy.exe" in names else -1
+        if i < 0 or names[i + 1:i + 3] != AIONUI_CHAIN:
+            return None
+        i, host = i + 2, "aionui"
     elif tool in APPS:  # Antigravity: the client was already told apart by its data path
         if APPS[tool] in names:
             i = names.index(APPS[tool])
@@ -260,9 +275,10 @@ def button(tool, session="", folder="", host=""):
     # KakaoWork's own small window, which the server closes; the system browser would
     # leave Chrome on top of the app.
     params = {}
-    if host:  # the conversation links open the desktop app, not the editor
+    if host:  # the agents' own conversation links open their desktop apps, not the host
         params["host"] = host
-    elif tool in LINKS and LINKS[tool][0].fullmatch(session or ""):
+    link = host or tool
+    if link in LINKS and LINKS[link][0].fullmatch(session or ""):
         params["session"] = session
     if folder:  # picks the window of that workspace when there are several
         params["folder"] = folder
@@ -310,7 +326,11 @@ def serve():
         def do_GET(self):
             parts = urllib.parse.urlsplit(self.path)
             tool = parts.path.removeprefix("/focus/").strip("/")
-            if tool not in APPS:  # only the app name is read, so a crafted link can do nothing else
+            query = urllib.parse.parse_qs(parts.query)
+            host = query.get("host", [""])[0]
+            host = host if host in HOST_EXES else ""
+            # Only the app (or host) name is read, so a crafted link can do nothing else.
+            if tool not in APPS and not (tool in NAMES and host):
                 self.send_error(404)
                 return
             popup = kakao_popup()  # before focus() changes what is in front
@@ -324,10 +344,7 @@ def serve():
                 return
             if site != "none":
                 log(f"REQUEST {tool} from KakaoWork's window ({site})")
-            query = urllib.parse.parse_qs(parts.query)
             folder = re.sub(r"[\\/:*?\"<>|]", "", query.get("folder", [""])[0])[:100]  # title text only
-            host = query.get("host", [""])[0]
-            host = host if host in HOST_EXES else ""
             result = focus(tool, query.get("via", [""])[0], query.get("session", [""])[0], folder, host)
             where = HOST_NAMES.get(host) or NAMES[tool]
             title = (f"{where}로 이동했습니다." if result.startswith("ok")
@@ -446,7 +463,7 @@ def focus(tool, via="", session="", folder="", host=""):
     the link names one. Activating a window makes Windows switch to the virtual desktop that
     holds it; if that does not happen, try the Alt+Tab-style switch."""
     exe = HOST_EXES.get(host) or APPS[tool]
-    opened = not host and open_conversation(tool, session)
+    opened = open_conversation(host or tool, session)
     hwnd = app_window(exe, 3 if opened else 0, folder) or reveal(exe)
     if not hwnd and opened:  # the link started the app; give it time to open its window
         hwnd = app_window(exe, 10, folder)
@@ -530,17 +547,87 @@ def approvals_reviewer(rollout):
     return m.group(1).decode("ascii", "replace") if m else ""
 
 
+def codex_turn(ev):
+    """The current Codex turn's turn_attribution from its task_started in the rollout: {} while
+    that is not written yet, None when the event names no turn or rollout."""
+    turn = ev.get("turn_id")
+    rollout = ev.get("transcript_path") or codex_rollout(ev.get("session_id"))
+    if not turn or not rollout:
+        return None
+    try:  # the whole file: a long turn writes far more than tail_lines reads after its start
+        data = Path(rollout).read_bytes()
+    except OSError:
+        return None
+    end = len(data)
+    while (at := data.rfind(turn.encode(), 0, end)) >= 0:
+        begin, stop = data.rfind(b"\n", 0, at) + 1, data.find(b"\n", at)
+        line, end = data[begin:stop if stop >= 0 else None], begin
+        if b'"task_started"' in line:
+            try:
+                p = json.loads(line).get("payload") or {}
+            except ValueError:
+                continue
+            if p.get("type") == "task_started" and p.get("turn_id") == turn:
+                return p.get("turn_attribution") or {"turn_id": turn}
+    return {}
+
+
+def from_agent(tool, ev):
+    """True for a Codex turn started by another agent's message: a subagent's send_input comes in
+    like a typed message (turn_trigger "composer") but names the sender's turn as its parent,
+    which a turn the user starts never does (all of this PC's threads, 2026-10-19)."""
+    turn = (codex_turn(ev) if tool == "codex" else None) or {}
+    return turn.get("turn_trigger") == "composer" and bool(turn.get("parent_turn_id"))
+
+
+TURN_EVENTS = ("task_started", "task_complete", "turn_aborted")
+
+
+def codex_subagents_busy(session):
+    """True while a subagent this thread spawned is in a turn (its rollout's last turn event is
+    task_started). Subagents' rollouts start after the thread's own, and their first line names
+    the parent thread."""
+    main = codex_rollout(session)
+    if not main:
+        return False
+    since = main.name[:27]  # rollout-YYYY-MM-DDTHH-MM-SS
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    for path in home.glob("sessions/**/rollout-*.jsonl"):
+        if path.name[:27] < since or session in path.name:
+            continue
+        with path.open(encoding="utf-8", errors="replace") as f:
+            head = f.readline()
+        if f'"parent_thread_id":"{session}"' not in head.replace(" ", ""):
+            continue
+        last = ""
+        for line in tail_lines(path):
+            if any(t in line for t in TURN_EVENTS):
+                try:
+                    kind = (json.loads(line).get("payload") or {}).get("type")
+                except ValueError:
+                    continue
+                last = kind if kind in TURN_EVENTS else last
+        if last == "task_started":
+            return True
+    return False
+
+
 def start(tool, ev):
     key = session_key(tool, ev)
     path = STATE / f"{key}.json"
     prompt = (ev.get("prompt") or "").lstrip()
     if tool == "codex" and prompt.startswith(CODEX_APP_REQUEST):
         return  # not the user's request; without a start its stop sends nothing
+    turn = codex_turn(ev) if tool == "codex" and path.exists() else None
+    if turn and turn.get("turn_trigger") == "composer" and turn.get("parent_turn_id"):
+        return  # a subagent's message goes on with the user's request, like Claude's wake-ups
     woke = tool == "claude" and CLAUDE_WAKEUP.match(ev.get("prompt") or "")
     if path.exists() and (tool not in PER_PROMPT or woke):
         return
-    for pending in (f"pending-{key}.json", f"pending-ask-{key}.json"):
-        (STATE / pending).unlink(missing_ok=True)  # the user answered
+    # Unless the turn's start is not in the rollout yet (who sent it is unknown then).
+    if turn != {}:
+        for pending in (f"pending-{key}.json", f"pending-ask-{key}.json"):
+            (STATE / pending).unlink(missing_ok=True)  # the user answered
     replied = tool == "codex" and prompt.startswith(CODEX_QUESTION_REPLY)
     if replied and path.exists():
         return  # keeps the request's own prompt and start time
@@ -569,6 +656,10 @@ def stop(tool, ev, cfg):
     elapsed = time.time() - st["ts"]
     error = ev.get("error")
     if elapsed < cfg["min_seconds"] and not error:
+        return
+    # A Codex turn answering a subagent's message never replaces the notification of the
+    # user's own turn still waiting.
+    if from_agent(tool, ev) and (STATE / f"pending-{key}.json").exists():
         return
     queue(tool, key, {"tool": tool, "elapsed": elapsed, "folder": st.get("folder"),
                       "prompt": st.get("prompt"), "answer": ev.get("last_assistant_message"),
@@ -664,6 +755,8 @@ def agy_transcript(path):
         if step.get("source") == "USER_EXPLICIT" and step.get("type") == "USER_INPUT":
             m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", step.get("content", ""), re.S)
             prompt, answer = (m.group(1) if m else step.get("content", "")), ""
+            # AionUi puts its rules before the first request of a conversation.
+            prompt = re.sub(r"\[Assistant Rules\].*?\[/Assistant Rules\]\s*", "", prompt, flags=re.S)
         elif step.get("type") == "PLANNER_RESPONSE" and step.get("content"):
             answer = step["content"]
     return prompt, answer
@@ -757,6 +850,8 @@ def queue(tool, key, msg):
         log(f"SKIP {tool} not from a desktop app window")
         return
     app, msg["host"] = found
+    if msg["host"] == "aionui":
+        msg["link"] = os.environ.get("AIONUI_CONVERSATION_ID", "")
     token = str(time.time_ns())
     name = f"pending-{key}.json"
     (STATE / name).write_text(json.dumps({"token": token, "app": app, "msg": msg},
@@ -803,7 +898,13 @@ def wait(name, token, cfg):
     if m.get("kind") == "permission" and decided(m):
         log(f"SKIP {m['tool']} approval was decided without the user")
         return
-    send(config(), message(m), m.get("tool"), m.get("session", ""), m.get("folder", ""), m.get("host", ""))
+    # Like Claude's background tasks: while the thread's subagents still work, the turn that
+    # ended (the user's, or one answering a subagent's message) is a pause, not the answer.
+    if m.get("tool") == "codex" and not m.get("kind") and codex_subagents_busy(m.get("session")):
+        log("SKIP codex answer while its subagents still work")
+        return
+    session = m.get("link", "") if m.get("host") == "aionui" else m.get("session", "")
+    send(config(), message(m), m.get("tool"), session, m.get("folder", ""), m.get("host", ""))
 
 
 def cleanup():
@@ -1086,7 +1187,8 @@ def main():
     ev = json.loads(raw) if raw.strip() else {}
     if tool == "agy":
         tool = agy_client(ev)
-        if tool not in cfg["antigravity"]:
+        # AGY CLI run by AionUi counts as AionUi's, whatever the antigravity setting says.
+        if tool not in cfg["antigravity"] and not (tool == "cli" and find_app(tool)):
             return
         if event == "stop" and ev.get("fullyIdle") is False:  # still running
             return

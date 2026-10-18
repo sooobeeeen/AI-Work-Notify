@@ -4,7 +4,7 @@
 
 ## 설치 순서
 
-0. **쓰는 앱 확인.** 이 알림은 Claude 데스크톱 앱, Codex 데스크톱 앱(Windows에서는 ChatGPT 앱과 같은 프로그램), VS Code의 Claude Code·Codex 확장, Antigravity(2.0 앱·IDE)에서 한 작업만 알린다. 터미널에서 쓰는 Claude Code·Codex는 알리지 않는다. 사용자에게 무엇을 쓰는지 묻고, 이 중 하나도 쓰지 않으면 그렇게 알리고 설치하지 않는다.
+0. **쓰는 앱 확인.** 이 알림은 Claude 데스크톱 앱, Codex 데스크톱 앱(Windows에서는 ChatGPT 앱과 같은 프로그램), VS Code의 Claude Code·Codex 확장, AionUi의 Claude Code·Codex·AGY, Antigravity(2.0 앱·IDE)에서 한 작업만 알린다. 터미널에서 쓰는 Claude Code·Codex는 알리지 않는다. 사용자에게 무엇을 쓰는지 묻고, 이 중 하나도 쓰지 않으면 그렇게 알리고 설치하지 않는다.
 1. **Python 확인.** Windows에서는 `py -0p`로 독립 Python을 찾고 `py -3.13 --version`으로 3.13을 우선 확인한다. 이미 설치된 다른 독립 Python 3.10 이상을 쓰려면 그 전체 경로로 아래 예시의 `py -3.13`을 바꾼다(PowerShell은 따옴표로 감싼 실행 파일 경로 앞에 `&`). 없거나 낮으면 사용자 범위로 설치한다.
    `winget install -e --id Python.Python.3.13 --scope user`
    설치 뒤 새 터미널에서 다시 확인한다. Microsoft Store 판 Python(경로에 `WindowsApps`)은 쓰지 않는다.
