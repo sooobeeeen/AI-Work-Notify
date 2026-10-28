@@ -55,6 +55,8 @@ Bash에서는 `py -3.13 ~/.kakaowork-notify/notify.py status`처럼 쓴다. Pyth
 | `SENT 🆕 AI 작업 알림 새 판 …` | 새 판 알림을 보냈다. 판마다 한 번만 보낸다. |
 | `RELEASE check failed …` | GitHub에서 최신 판을 확인하지 못했다(인터넷 연결이나 회사 방화벽). 다음 날 다시 확인한다. 답변 알림과는 상관없다. |
 | `SKIP codex … is not a saved conversation` | Codex 앱이 스스로 돌린 요청(다음 질문 추천 등, 저장되지 않는 임시 대화)이라 보내지 않았다. 정상이다. 사용자가 보낸 질문인데 이 줄이 나오면 그 대화가 `~/.codex/sessions`에 저장돼 있는지 확인한다. |
+| `SKIP <앱> answer of an AionUi teammate (its lead reports)` | AionUi 팀의 팀원이 답을 끝냈다. 팀원의 답은 팀장에게 가는 보고라 알리지 않는다. 정상이다. |
+| `SKIP <앱> answer of an AionUi team lead while teammates still work` | AionUi 팀의 팀장이 답을 끝냈지만 팀원이 아직 일하는 중이라 알리지 않았다. 정상이다. 팀원이 모두 쉬게 된 뒤의 답은 알린다. |
 | `SKIP codex answer while its subagents still work` | Codex가 답변을 끝냈지만 그 대화의 서브에이전트가 아직 일하는 중이라 알리지 않았다. 사용자가 보낸 요청이든 서브에이전트의 보고에 답한 것이든 같다. 정상이다. 모든 서브에이전트가 일을 마친 뒤의 답은 알린다. |
 | `WAIT claude N background task(s) still running` | Claude가 백그라운드 작업(서브에이전트·백그라운드 명령·모니터)을 기다리느라 턴을 멈췄을 뿐이라 알리지 않았다. 정상이다. 모두 끝난 뒤 Claude가 마무리하면 알림이 간다. 작업이 다 끝났는데도 이 줄만 이어지면 Claude 앱의 백그라운드 작업 목록을 확인하게 한다. |
 | `SKIP … not from a desktop app window` | 창이 있는 앱 밖에서 돌린 실행이라 건너뛰었다. 터미널에서 돌린 `claude`, `claude -p`, `codex exec`, `agy -p`, SDK 스크립트면 정상이다. 이 알림은 Claude·Codex 데스크톱 앱, VS Code의 Claude Code·Codex 확장, AionUi의 Claude Code·Codex·AGY, Antigravity(2.0 앱·IDE)에서만 동작한다고 사용자에게 알린다. |

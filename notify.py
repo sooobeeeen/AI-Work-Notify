@@ -516,6 +516,25 @@ CODEX_APP_REQUEST = "This is an app-generated request"
 # The answer to a Codex question card comes back as a prompt in this tag, sent into the running
 # turn or starting one; it goes on with the user's request (empty when the app answers itself).
 CODEX_QUESTION_REPLY = "<send_user_message_question_reply>"
+# In an AionUi team each agent gets its mailbox as a prompt, "## New Messages - From `<sender>`
+# [message]: <text>", the sender being "user" or a member's slot id.
+AIONUI_TEAM_MESSAGE = re.compile(r"#+\s*New Messages - From `([^`]+)` \[message\]:\s*")
+
+
+def aionui_team(command):
+    """`aioncore team <command>`'s data for this agent's AionUi conversation (context: its role,
+    "lead" or "teammate"; members: everyone's status), or None outside a team. Only a process
+    AionUi started has the runtime token it needs."""
+    exe = os.environ.get("AIONUI_HELPER_BIN")
+    if not exe or not os.environ.get("AIONUI_RUNTIME_TOKEN"):
+        return None
+    try:
+        out = subprocess.run([exe, "team", command], capture_output=True, text=True, encoding="utf-8",
+                             timeout=15, creationflags=0x08000000).stdout  # CREATE_NO_WINDOW
+        res = json.loads(out)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    return res.get("data") if res.get("success") else None
 
 
 def codex_rollout(session):
@@ -621,6 +640,9 @@ def start(tool, ev):
     turn = codex_turn(ev) if tool == "codex" and path.exists() else None
     if turn and turn.get("turn_trigger") == "composer" and turn.get("parent_turn_id"):
         return  # a subagent's message goes on with the user's request, like Claude's wake-ups
+    team = AIONUI_TEAM_MESSAGE.match(prompt)
+    if team and team.group(1) != "user" and path.exists():
+        return  # a team member's message goes on with the user's request
     woke = tool == "claude" and CLAUDE_WAKEUP.match(ev.get("prompt") or "")
     if path.exists() and (tool not in PER_PROMPT or woke):
         return
@@ -631,7 +653,8 @@ def start(tool, ev):
     replied = tool == "codex" and prompt.startswith(CODEX_QUESTION_REPLY)
     if replied and path.exists():
         return  # keeps the request's own prompt and start time
-    path.write_text(json.dumps({"ts": time.time(), "prompt": "(질문에 답함)" if replied else short(ev.get("prompt"), 60),
+    shown = prompt[team.end():] if team else ev.get("prompt")
+    path.write_text(json.dumps({"ts": time.time(), "prompt": "(질문에 답함)" if replied else short(shown, 60),
                                 "folder": folder(ev)}, ensure_ascii=False), encoding="utf-8")
 
 
@@ -903,7 +926,18 @@ def wait(name, token, cfg):
     if m.get("tool") == "codex" and not m.get("kind") and codex_subagents_busy(m.get("session")):
         log("SKIP codex answer while its subagents still work")
         return
-    session = m.get("link", "") if m.get("host") == "aionui" else m.get("session", "")
+    # An AionUi team talks to the user through its lead: a teammate's answers go to the lead, and
+    # the lead's turn is a pause while a teammate still works. Questions and approvals still go.
+    if m.get("host") == "aionui" and not m.get("kind"):
+        role = (aionui_team("context") or {}).get("role")
+        if role == "teammate":
+            log(f"SKIP {m['tool']} answer of an AionUi teammate (its lead reports)")
+            return
+        if role == "lead" and any(x.get("role") == "teammate" and x.get("status") == "working"
+                                  for x in aionui_team("members") or []):
+            log(f"SKIP {m['tool']} answer of an AionUi team lead while teammates still work")
+            return
+    session =m.get("link", "") if m.get("host") == "aionui" else m.get("session", "")
     send(config(), message(m), m.get("tool"), session, m.get("folder", ""), m.get("host", ""))
 
 

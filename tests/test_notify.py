@@ -371,6 +371,35 @@ class NotifyTests(unittest.TestCase):
         finish()  # none works any more: the last report is the answer
         self.assertEqual(len(sent), 1)
 
+    def test_aionui_team_tells_the_user_through_its_lead(self):
+        state = self.state / (notify.session_key("claude", self.event) + ".json")
+        notify.start("claude", {**self.event, "prompt": "## New Messages - From `user` [message]: 표 고쳐줘"})
+        self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["prompt"], "표 고쳐줘")
+        notify.start("claude", {**self.event, "prompt": "## New Messages - From `01a17ffa-9bb1` [message]: 끝냈습니다"})
+        self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["prompt"], "표 고쳐줘")
+
+        pending = self.pending_for("claude")
+        sent, logged = [], []
+
+        def finish(context, members=()):
+            pending.write_text(json.dumps({"token": "t", "app": 123, "msg": {
+                "tool": "claude", "host": "aionui", "elapsed": 5, "prompt": "표 고쳐줘"}}))
+            answers = {"context": context, "members": list(members)}
+            with patch.object(notify.time, "time", side_effect=[0, 31]), \
+                    patch.object(notify, "aionui_team", side_effect=answers.get), \
+                    patch.object(notify, "user_is_watching", return_value=False), \
+                    patch.object(notify, "send", side_effect=lambda *a: sent.append(a)), \
+                    patch.object(notify, "log", side_effect=logged.append):
+                notify.wait(pending.name, "t", notify.config())
+
+        finish({"role": "teammate"})
+        finish({"role": "lead"}, [{"role": "lead", "status": "idle"}, {"role": "teammate", "status": "working"}])
+        self.assertEqual((sent, logged), ([], ["SKIP claude answer of an AionUi teammate (its lead reports)",
+                                               "SKIP claude answer of an AionUi team lead while teammates still work"]))
+        finish({"role": "lead"}, [{"role": "teammate", "status": "idle"}])
+        finish(None)  # not in a team
+        self.assertEqual(len(sent), 2)
+
     def test_aionui_button_opens_the_conversation(self):
         url = notify.button("codex", "6dda2e14", host="aionui")["action"]["value"]
         self.assertIn("host=aionui", url)
